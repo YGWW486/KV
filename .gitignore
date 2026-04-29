@@ -29,6 +29,7 @@ Makefile
 *.cmake
 !CMakeLists.txt
 *.md
+*.mdc
 # Compiled files
 *.o
 *.obj
