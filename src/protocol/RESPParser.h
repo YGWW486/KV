@@ -31,7 +31,7 @@ private:
     ParseResult parseArray(Buffer* buffer, std::shared_ptr<RESPObject>* out);
     
     // 读取一行（到\r\n为止）
-    std::string readLine(Buffer* buffer);
+    bool readLine(Buffer* buffer, std::string* line);
     // 查找\r\n的位置
     size_t findCRLF(const Buffer* buffer);
 };

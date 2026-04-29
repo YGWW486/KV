@@ -65,9 +65,9 @@ add_library(kvstore STATIC
 
 target_include_directories(kvstore
     PUBLIC
-        $&lt;BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include&gt;
-        $&lt;BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src&gt;
-        $&lt;INSTALL_INTERFACE:include&gt;
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>
+        $<INSTALL_INTERFACE:include>
 )
 
 # Windows 上链接必要的库

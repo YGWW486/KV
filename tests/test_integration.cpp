@@ -20,7 +20,7 @@ void testProtocolIntegration() {
     
     // 测试RESP协议编码性能
     benchmark.run("RESP编码", 50000, []() {
-        RESPString resp("Hello World");
+        RESPBulkString resp("Hello World");
         std::string encoded = resp.toString();
     });
     
@@ -29,7 +29,8 @@ void testProtocolIntegration() {
         Buffer buffer;
         buffer.append("+OK\r\n");
         RESPParser parser;
-        parser.parse(buffer);
+        std::shared_ptr<RESPObject> out;
+        parser.parse(&buffer, &out);
     });
     
     benchmark.printSummary();
@@ -50,7 +51,7 @@ void testStorageProtocolIntegration() {
         storage.set("key", "value");
         
         // 3. 生成响应
-        RESPString resp("OK");
+        RESPSimpleString resp("OK");
         std::string response = resp.toString();
     });
     
@@ -64,7 +65,7 @@ void testStorageProtocolIntegration() {
         
         // 3. 生成响应
         if (value) {
-            RESPString resp(*value);
+            RESPBulkString resp(*value);
             std::string response = resp.toString();
         } else {
             RESPError resp("Key not found");
@@ -165,6 +166,7 @@ void testPersistenceIntegration() {
     // 测试AOF持久化集成
     auto aof_engine = std::make_unique<AOFPersistenceEngine>("integration_test.aof");
     PersistenceManager aof_manager(std::move(aof_engine));
+    aof_manager.start();
     
     Benchmark benchmark;
     
@@ -189,6 +191,7 @@ void testPersistenceIntegration() {
     });
     
     benchmark.printSummary();
+    aof_manager.stop();
     
     // 清理测试文件
     std::filesystem::remove("integration_test.aof");

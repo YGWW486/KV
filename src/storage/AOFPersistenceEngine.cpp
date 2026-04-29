@@ -1,10 +1,11 @@
-#include "AOFPersistenceEngine.h"
-#include "StorageEngine.h"
-#include "../utils/Logging.h"
+#include "storage/PersistenceEngine.h"
+#include "storage/StorageEngine.h"
+#include "utils/Logging.h"
 #include <fstream>
 #include <thread>
 #include <chrono>
 #include <mutex>
+#include <cstdio>
 
 namespace kvstore {
 
@@ -69,7 +70,7 @@ bool AOFPersistenceEngine::save(const StorageEngine* storage) {
 
 void AOFPersistenceEngine::recordWrite(const std::string& command) {
     if (command.empty()) {
-        LOG_WARNING << "记录空命令到AOF";
+        LOG_WARN << "记录空命令到AOF";
         return;
     }
     
@@ -134,12 +135,13 @@ bool AOFPersistenceEngine::rewriteAOF(const StorageEngine* storage) {
     LOG_INFO << "开始重写AOF文件";
     
     // 获取所有键
-    auto keys = storage->keys("*");
+    auto* mutableStorage = const_cast<StorageEngine*>(storage);
+    auto keys = mutableStorage->keys("*");
     size_t key_count = 0;
     
     for (const auto& key : keys) {
         // 检查键的类型并生成相应的SET命令
-        if (auto value = storage->get(key)) {
+        if (auto value = mutableStorage->get(key)) {
             // String类型
             temp_file << "SET " << key << " " << *value << "\n";
             key_count++;
@@ -150,7 +152,8 @@ bool AOFPersistenceEngine::rewriteAOF(const StorageEngine* storage) {
     
     temp_file.close();
     
-    // 替换原文件
+    // Windows下rename不会覆盖已存在文件，先删除旧文件再替换。
+    std::remove(aof_path_.c_str());
     if (std::rename(temp_path.c_str(), aof_path_.c_str()) != 0) {
         LOG_ERROR << "重写AOF文件失败，无法替换原文件";
         return false;

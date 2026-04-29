@@ -1,5 +1,5 @@
-#include "PersistenceManager.h"
-#include "../utils/Logging.h"
+#include "storage/PersistenceEngine.h"
+#include "utils/Logging.h"
 #include <thread>
 #include <chrono>
 
@@ -12,7 +12,7 @@ PersistenceManager::PersistenceManager(std::unique_ptr<PersistenceEngine> engine
 
 bool PersistenceManager::start() {
     if (running_) {
-        LOG_WARNING << "持久化管理器已经在运行";
+        LOG_WARN << "持久化管理器已经在运行";
         return true;
     }
     
@@ -27,7 +27,7 @@ bool PersistenceManager::start() {
 
 bool PersistenceManager::stop() {
     if (!running_) {
-        LOG_WARNING << "持久化管理器已经停止";
+        LOG_WARN << "持久化管理器已经停止";
         return true;
     }
     
@@ -41,7 +41,7 @@ bool PersistenceManager::stop() {
 
 void PersistenceManager::recordCommand(const std::string& command) {
     if (!running_) {
-        LOG_WARNING << "持久化管理器未运行，忽略命令记录";
+        LOG_WARN << "持久化管理器未运行，忽略命令记录";
         return;
     }
     

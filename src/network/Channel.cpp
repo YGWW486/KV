@@ -3,6 +3,7 @@
 #include "utils/Logging.h"
 
 #include <sstream>
+#include <cassert>
 
 namespace kvstore {
 

@@ -9,6 +9,8 @@
 
 #pragma comment(lib, "ws2_32.lib")
 
+using namespace kvstore;
+
 const int PORT = 6379;
 const char* SERVER_IP = "127.0.0.1";
 const int BUFFER_SIZE = 1024;

@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <atomic>
 #include "Benchmark.h"
+#include "StressTest.h"
 #include "../src/storage/MemoryStorageEngine.h"
 #include "../src/storage/PersistenceEngine.h"
 

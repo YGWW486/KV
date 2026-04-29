@@ -39,9 +39,9 @@ private:
         void reset();
     };
 
-    void wakeup() override;
+    void wakeup();
     void handleWakeup();
-    void handleRead() override; // 兼容基类（保留）
+    void handleRead(); // 兼容基类（保留）
     void handleCompletions();
     void postCompletion(Channel* channel, DWORD bytesTransferred);
     void postRead(Channel* channel);
@@ -53,7 +53,7 @@ private:
     std::unordered_map<SOCKET, Channel*> channels_;
     std::unordered_map<SOCKET, OverlappedContext*> readContexts_;
     std::unordered_map<SOCKET, OverlappedContext*> writeContexts_;
-    std::mutex channelsMutex_;
+    mutable std::mutex channelsMutex_;
     std::atomic<bool> quitPending_;
 };
 

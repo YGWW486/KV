@@ -13,7 +13,7 @@ enum LogLevel {
     DEBUG = 1,
     INFO = 2,
     WARN = 3,
-    ERROR = 4,
+    ERROR_LEVEL = 4,
     FATAL = 5,
     NUM_LOG_LEVELS
 };
@@ -59,7 +59,6 @@ public:
     LogStream& operator<<(double v) { stream_ << v; return *this; }
 
     LogStream& operator<<(const char* v) { if (v) stream_ << v; return *this; }
-    LogStream& operator<<(const string& v) { stream_ << v; return *this; }
     LogStream& operator<<(const std::string& v) { stream_ << v; return *this; }
 
     LogStream& operator<<(const void* p) {
@@ -102,7 +101,7 @@ private:
 #define LOG_DEBUG LOG_LEVEL(DEBUG)
 #define LOG_INFO LOG_LEVEL(INFO)
 #define LOG_WARN LOG_LEVEL(WARN)
-#define LOG_ERROR LOG_LEVEL(ERROR)
+#define LOG_ERROR LOG_LEVEL(ERROR_LEVEL)
 #define LOG_FATAL LOG_LEVEL(FATAL)
 
 // 条件日志

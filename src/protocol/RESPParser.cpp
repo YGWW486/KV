@@ -7,8 +7,12 @@ namespace kvstore {
 size_t RESPParser::findCRLF(const Buffer* buffer) {
     const char* data = buffer->peek();
     size_t len = buffer->readableBytes();
-    
-    for (size_t i = 0; i < len - 1; ++i) {
+
+    if (len < 2) {
+        return std::string::npos;
+    }
+
+    for (size_t i = 0; i + 1 < len; ++i) {
         if (data[i] == '\r' && data[i + 1] == '\n') {
             return i;
         }
@@ -16,14 +20,14 @@ size_t RESPParser::findCRLF(const Buffer* buffer) {
     return std::string::npos;
 }
 
-std::string RESPParser::readLine(Buffer* buffer) {
+bool RESPParser::readLine(Buffer* buffer, std::string* line) {
     size_t crlf_pos = findCRLF(buffer);
     if (crlf_pos == std::string::npos) {
-        return ""; // 数据不完整
+        return false;
     }
-    std::string line(buffer->peek(), crlf_pos);
+    *line = std::string(buffer->peek(), crlf_pos);
     buffer->retrieve(crlf_pos + 2); // 跳过\r\n
-    return line;
+    return true;
 }
 
 ParseResult RESPParser::parse(Buffer* buffer, std::shared_ptr<RESPObject>* out) {
@@ -50,75 +54,140 @@ ParseResult RESPParser::parse(Buffer* buffer, std::shared_ptr<RESPObject>* out) 
 }
 
 ParseResult RESPParser::parseSimpleString(Buffer* buffer, std::shared_ptr<RESPObject>* out) {
-    buffer->retrieve(1); // 跳过 '+'
-    std::string line = readLine(buffer);
-    if (line.empty()) {
+    size_t crlf_pos = findCRLF(buffer);
+    if (crlf_pos == std::string::npos) {
         return ParseResult::Incomplete;
     }
-    
+
+    if (*buffer->peek() != '+') {
+        return ParseResult::Error;
+    }
+
+    std::string line(buffer->peek() + 1, crlf_pos - 1);
+    buffer->retrieve(crlf_pos + 2);
     *out = std::make_shared<RESPSimpleString>(std::move(line));
     return ParseResult::Success;
 }
 
 ParseResult RESPParser::parseError(Buffer* buffer, std::shared_ptr<RESPObject>* out) {
-    buffer->retrieve(1); // 跳过 '-'
-    std::string line = readLine(buffer);
-    if (line.empty()) {
+    size_t crlf_pos = findCRLF(buffer);
+    if (crlf_pos == std::string::npos) {
         return ParseResult::Incomplete;
     }
-    
+
+    if (*buffer->peek() != '-') {
+        return ParseResult::Error;
+    }
+
+    std::string line(buffer->peek() + 1, crlf_pos - 1);
+    buffer->retrieve(crlf_pos + 2);
     *out = std::make_shared<RESPError>(std::move(line));
     return ParseResult::Success;
 }
 
 ParseResult RESPParser::parseInteger(Buffer* buffer, std::shared_ptr<RESPObject>* out) {
-    buffer->retrieve(1); // 跳过 ':'
-    std::string line = readLine(buffer);
-    if (line.empty()) {
+    size_t crlf_pos = findCRLF(buffer);
+    if (crlf_pos == std::string::npos) {
         return ParseResult::Incomplete;
     }
-    
-    int64_t value = std::stoll(line);
+
+    if (*buffer->peek() != ':') {
+        return ParseResult::Error;
+    }
+
+    std::string line(buffer->peek() + 1, crlf_pos - 1);
+    buffer->retrieve(crlf_pos + 2);
+    int64_t value = 0;
+    try {
+        value = std::stoll(line);
+    } catch (...) {
+        return ParseResult::Error;
+    }
     *out = std::make_shared<RESPInteger>(value);
     return ParseResult::Success;
 }
 
 ParseResult RESPParser::parseBulkString(Buffer* buffer, std::shared_ptr<RESPObject>* out) {
-    buffer->retrieve(1); // 跳过 '$'
-    std::string line = readLine(buffer);
-    if (line.empty()) {
+    const char* data = buffer->peek();
+    size_t len = buffer->readableBytes();
+    if (len < 4 || data[0] != '$') {
+        return len == 0 ? ParseResult::Incomplete : ParseResult::Error;
+    }
+
+    size_t crlf_pos = std::string::npos;
+    for (size_t i = 1; i + 1 < len; ++i) {
+        if (data[i] == '\r' && data[i + 1] == '\n') {
+            crlf_pos = i;
+            break;
+        }
+    }
+    if (crlf_pos == std::string::npos) {
         return ParseResult::Incomplete;
     }
-    
-    int64_t len = std::stoll(line);
-    if (len == -1) { // 特殊情况：NULL Bulk String
-        // 这里简化处理，先返回空字符串
-        *out = std::make_shared<RESPBulkString>("");
+
+    int64_t bulk_len = 0;
+    try {
+        bulk_len = std::stoll(std::string(data + 1, crlf_pos - 1));
+    } catch (...) {
+        return ParseResult::Error;
+    }
+
+    const size_t header_len = crlf_pos + 2;
+    if (bulk_len == -1) { // NULL Bulk String
+        buffer->retrieve(header_len);
+        *out = std::make_shared<RESPBulkString>(RESPBulkString::null());
         return ParseResult::Success;
     }
-    
-    if (buffer->readableBytes() < (size_t)len + 2) { // 加上\r\n
+
+    if (bulk_len < 0) {
+        return ParseResult::Error;
+    }
+
+    if (buffer->readableBytes() < header_len + static_cast<size_t>(bulk_len) + 2) {
         return ParseResult::Incomplete;
     }
-    
-    std::string value(buffer->peek(), len);
-    buffer->retrieve(len + 2); // 跳过value和\r\n
-    
+
+    buffer->retrieve(header_len);
+    std::string value(buffer->peek(), static_cast<size_t>(bulk_len));
+    buffer->retrieve(static_cast<size_t>(bulk_len) + 2); // 跳过value和\r\n
+
     *out = std::make_shared<RESPBulkString>(std::move(value));
     return ParseResult::Success;
 }
 
 ParseResult RESPParser::parseArray(Buffer* buffer, std::shared_ptr<RESPObject>* out) {
-    buffer->retrieve(1); // 跳过 '*'
-    std::string line = readLine(buffer);
-    if (line.empty()) {
+    const char* data = buffer->peek();
+    size_t len = buffer->readableBytes();
+    if (len < 4 || data[0] != '*') {
+        return len == 0 ? ParseResult::Incomplete : ParseResult::Error;
+    }
+
+    size_t crlf_pos = std::string::npos;
+    for (size_t i = 1; i + 1 < len; ++i) {
+        if (data[i] == '\r' && data[i + 1] == '\n') {
+            crlf_pos = i;
+            break;
+        }
+    }
+    if (crlf_pos == std::string::npos) {
         return ParseResult::Incomplete;
     }
-    
-    int64_t num_elements = std::stoll(line);
+
+    int64_t num_elements = 0;
+    try {
+        num_elements = std::stoll(std::string(data + 1, crlf_pos - 1));
+    } catch (...) {
+        return ParseResult::Error;
+    }
+
+    buffer->retrieve(crlf_pos + 2);
     if (num_elements == -1) { // NULL array
-        *out = std::make_shared<RESPArray>(std::vector<std::shared_ptr<RESPObject>>());
+        *out = std::make_shared<RESPArray>(RESPArray::null());
         return ParseResult::Success;
+    }
+
+    if (num_elements < -1) {
+        return ParseResult::Error;
     }
     
     std::vector<std::shared_ptr<RESPObject>> elements;

@@ -6,21 +6,21 @@
 #include <mswsock.h>
 #include <ws2tcpip.h>
 #include <iostream>
+#include <cassert>
 
 namespace kvstore {
 
 IOCPLoop::OverlappedContext::OverlappedContext(Channel* ch, int type)
     : channel(ch), eventType(type)
 {
-    ZeroMemory(&overlapped, sizeof(overlapped));
-    wsaBuf.buf = buffer.beginWrite();
-    wsaBuf.len = static_cast<ULONG>(buffer.writableBytes());
+    reset();
 }
 
 void IOCPLoop::OverlappedContext::reset() {
     ZeroMemory(&overlapped, sizeof(overlapped));
     wsaBuf.buf = buffer.beginWrite();
-    wsaBuf.len = static_cast<ULONG>(buffer.writableBytes());
+    // 统一使用0字节I/O作为事件通知，实际读写由Connection非阻塞路径处理。
+    wsaBuf.len = 0;
 }
 
 IOCPLoop::IOCPLoop()
@@ -170,9 +170,35 @@ void IOCPLoop::handleCompletions() {
     }
 
     if (ctx->eventType == 0) { // read
-        ctx->buffer.hasWritten(bytesTransferred);
+        // 重新投递0字节读通知，保持可读事件持续生效。
+        SOCKET fd = static_cast<SOCKET>(channel->fd());
+        ctx->reset();
+        DWORD flags = 0;
+        DWORD bytesReceived = 0;
+        int rc = WSARecv(fd, &ctx->wsaBuf, 1, &bytesReceived, &flags,
+                         &ctx->overlapped, nullptr);
+        if (rc == SOCKET_ERROR) {
+            int err = WSAGetLastError();
+            if (err != ERROR_IO_PENDING) {
+                LOG_WARN << "WSARecv re-arm failed: " << err;
+            }
+        }
         channel->set_revents(Channel::kReadEvent);
     } else { // write
+        // 对写事件也采用0字节通知，避免IOCP与Connection发送路径混用。
+        if (channel->isWriting()) {
+            SOCKET fd = static_cast<SOCKET>(channel->fd());
+            ctx->reset();
+            DWORD bytesSent = 0;
+            int rc = WSASend(fd, &ctx->wsaBuf, 1, &bytesSent, 0,
+                             &ctx->overlapped, nullptr);
+            if (rc == SOCKET_ERROR) {
+                int err = WSAGetLastError();
+                if (err != ERROR_IO_PENDING) {
+                    LOG_WARN << "WSASend re-arm failed: " << err;
+                }
+            }
+        }
         channel->set_revents(Channel::kWriteEvent);
     }
 
@@ -215,10 +241,9 @@ void IOCPLoop::updateChannel(Channel* channel) {
             }
         }
         if (channel->isWriting()) {
-            auto it = writeContexts_.find(fd);
-            if (it == writeContexts_.end()) {
-                postWrite(channel);
-            }
+            // 当前Connection写路径为同步send，IOCP层直接触发一次写回调以刷新输出缓冲。
+            channel->set_revents(Channel::kWriteEvent);
+            activeChannels_.push_back(channel);
         }
     }
 }
@@ -286,6 +311,7 @@ void IOCPLoop::postWrite(Channel* channel) {
     OverlappedContext* ctx = new OverlappedContext(channel, 1);
     writeContexts_[fd] = ctx;
 
+    ctx->reset();
     DWORD bytesSent = 0;
     int rc = WSASend(fd, &ctx->wsaBuf, 1, &bytesSent, 0,
                      &ctx->overlapped, nullptr);

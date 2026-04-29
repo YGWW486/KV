@@ -1,8 +1,10 @@
 #include "network/EventLoop.h"
 #include "network/Channel.h"
+#include "network/Timer.h"
 #include "utils/Logging.h"
 
 #include <sstream>
+#include <cassert>
 
 namespace kvstore {
 
@@ -102,6 +104,12 @@ void EventLoop::doPendingFunctors() {
     callingPendingFunctors_ = false;
 }
 
+void EventLoop::wakeup() {
+}
+
+void EventLoop::handleRead() {
+}
+
 bool EventLoop::isInLoopThread() const {
     return threadId_ == std::this_thread::get_id();
 }
@@ -111,6 +119,21 @@ void EventLoop::assertInLoopThread() const {
         LOG_FATAL << "EventLoop was created in thread " << threadId_ 
                   << ", but is running in thread " << std::this_thread::get_id();
     }
+}
+
+TimerId EventLoop::runAt(Timestamp /*time*/, TimerCallback /*cb*/) {
+    return TimerId();
+}
+
+TimerId EventLoop::runAfter(double /*delay*/, TimerCallback /*cb*/) {
+    return TimerId();
+}
+
+TimerId EventLoop::runEvery(double /*interval*/, TimerCallback /*cb*/) {
+    return TimerId();
+}
+
+void EventLoop::cancel(TimerId /*timerId*/) {
 }
 
 } // namespace kvstore

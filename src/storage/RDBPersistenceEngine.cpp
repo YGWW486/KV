@@ -1,9 +1,10 @@
-#include "RDBPersistenceEngine.h"
-#include "StorageEngine.h"
-#include "../utils/Logging.h"
+#include "storage/PersistenceEngine.h"
+#include "storage/StorageEngine.h"
+#include "utils/Logging.h"
 #include <fstream>
 #include <sstream>
 #include <iomanip>
+#include <ctime>
 
 namespace kvstore {
 
@@ -152,7 +153,7 @@ bool RDBPersistenceEngine::loadSnapshot(StorageEngine* storage) {
         size_t second_sep = line.find('|', first_sep + 1);
         
         if (first_sep == std::string::npos || second_sep == std::string::npos) {
-            LOG_WARNING << "跳过格式错误的RDB数据行: " << line;
+            LOG_WARN << "跳过格式错误的RDB数据行: " << line;
             continue;
         }
         
@@ -175,10 +176,11 @@ bool RDBPersistenceEngine::loadSnapshot(StorageEngine* storage) {
 
 bool RDBPersistenceEngine::saveStringData(const StorageEngine* storage, std::ostream& os) {
     // 简化实现：获取所有键并保存为STRING类型
-    auto keys = storage->keys("*");
+    auto* mutableStorage = const_cast<StorageEngine*>(storage);
+    auto keys = mutableStorage->keys("*");
     
     for (const auto& key : keys) {
-        if (auto value = storage->get(key)) {
+        if (auto value = mutableStorage->get(key)) {
             os << "STRING|" << key << "|" << *value << "\n";
         }
     }

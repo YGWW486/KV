@@ -68,27 +68,33 @@ private:
 class RESPBulkString : public RESPObject {
 public:
     explicit RESPBulkString(std::string value);
+    static RESPBulkString null();
     
     RESPType type() const override { return RESPType::BulkString; }
     std::string toString() const override;
     const std::string& value() const { return value_; }
+    bool isNull() const { return isNull_; }
     
 private:
     std::string value_;
+    bool isNull_;
 };
 
 // 数组类型
 class RESPArray : public RESPObject {
 public:
     explicit RESPArray(std::vector<std::shared_ptr<RESPObject>> elements);
+    static RESPArray null();
     
     RESPType type() const override { return RESPType::Array; }
     std::string toString() const override;
     const std::vector<std::shared_ptr<RESPObject>>& elements() const { return elements_; }
     size_t size() const { return elements_.size(); }
+    bool isNull() const { return isNull_; }
     
 private:
     std::vector<std::shared_ptr<RESPObject>> elements_;
+    bool isNull_;
 };
 
 } // namespace kvstore

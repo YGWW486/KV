@@ -28,14 +28,18 @@ void Connection::connectEstablished() {
     channel_->tie(shared_from_this());
     channel_->enableReading();
 
-    connectionCallback_(shared_from_this());
+    if (connectionCallback_) {
+        connectionCallback_(shared_from_this());
+    }
 }
 
 void Connection::connectDestroyed() {
     loop_->assertInLoopThread();
     setState(kDisconnected);
     channel_->disableAll();
-    connectionCallback_(shared_from_this());
+    if (connectionCallback_) {
+        connectionCallback_(shared_from_this());
+    }
 
     channel_->remove();
 }
@@ -45,7 +49,12 @@ void Connection::send(const std::string& message) {
         if (loop_->isInLoopThread()) {
             sendInLoop(message);
         } else {
-            loop_->runInLoop(std::bind(&Connection::sendInLoop, this, message));
+            std::weak_ptr<Connection> weakConn = shared_from_this();
+            loop_->runInLoop([weakConn, message]() {
+                if (auto conn = weakConn.lock()) {
+                    conn->sendInLoop(message);
+                }
+            });
         }
     }
 }
@@ -55,7 +64,13 @@ void Connection::send(const void* message, size_t len) {
         if (loop_->isInLoopThread()) {
             sendInLoop(message, len);
         } else {
-            loop_->runInLoop(std::bind(&Connection::sendInLoop, this, std::string(reinterpret_cast<const char*>(message), len)));
+            std::string data(reinterpret_cast<const char*>(message), len);
+            std::weak_ptr<Connection> weakConn = shared_from_this();
+            loop_->runInLoop([weakConn, data = std::move(data)]() {
+                if (auto conn = weakConn.lock()) {
+                    conn->sendInLoop(data);
+                }
+            });
         }
     }
 }
@@ -74,7 +89,7 @@ void Connection::sendInLoop(const void* message, size_t len) {
     const char* data = static_cast<const char*>(message);
 
     if (!channel_->isWriting() && outputBuffer_.readableBytes() == 0) {
-        int n = send(sockfd_, data, (int)remaining, 0);
+        int n = ::send(sockfd_, data, (int)remaining, 0);
         if (n >= 0) {
             remaining -= n;
             data += n;
@@ -95,7 +110,12 @@ void Connection::sendInLoop(const void* message, size_t len) {
 void Connection::shutdown() {
     if (state_ == kConnected) {
         setState(kDisconnecting);
-        loop_->runInLoop(std::bind(&Connection::shutdownInLoop, this));
+        std::weak_ptr<Connection> weakConn = shared_from_this();
+        loop_->runInLoop([weakConn]() {
+            if (auto conn = weakConn.lock()) {
+                conn->shutdownInLoop();
+            }
+        });
     }
 }
 
@@ -111,7 +131,9 @@ void Connection::handleRead(Timestamp receiveTime) {
     int savedErrno = 0;
     ssize_t n = inputBuffer_.readFd(sockfd_, &savedErrno);
     if (n > 0) {
-        messageCallback_(shared_from_this(), &inputBuffer_, receiveTime);
+        if (messageCallback_) {
+            messageCallback_(shared_from_this(), &inputBuffer_, receiveTime);
+        }
     } else if (n == 0) {
         handleClose();
     } else {
@@ -123,7 +145,7 @@ void Connection::handleRead(Timestamp receiveTime) {
 void Connection::handleWrite() {
     loop_->assertInLoopThread();
     if (channel_->isWriting()) {
-        int n = send(sockfd_, outputBuffer_.peek(), (int)outputBuffer_.readableBytes(), 0);
+        int n = ::send(sockfd_, outputBuffer_.peek(), (int)outputBuffer_.readableBytes(), 0);
         if (n > 0) {
             outputBuffer_.retrieve(n);
             if (outputBuffer_.readableBytes() == 0) {
@@ -143,7 +165,9 @@ void Connection::handleClose() {
     loop_->assertInLoopThread();
     setState(kDisconnected);
     channel_->disableAll();
-    closeCallback_(shared_from_this());
+    if (closeCallback_) {
+        closeCallback_(shared_from_this());
+    }
 }
 
 void Connection::handleError() {
