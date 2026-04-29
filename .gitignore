@@ -1,0 +1,46 @@
+# Build outputs
+build/
+cmake-build-*/
+*.exe
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+*.out
+*.log
+
+
+# IDE
+.idea/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+*.md
+# Compiled files
+*.o
+*.obj
+*.elf
+*.ilk
+*.meta
+*.pdb
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+.DS_Store
+Thumbs.db

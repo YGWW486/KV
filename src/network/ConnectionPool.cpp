@@ -1,0 +1,56 @@
+#include "network/ConnectionPool.h"
+#include "utils/Logging.h"
+
+namespace kvstore {
+
+void ConnectionPool::addConnection(const std::shared_ptr<Connection>& conn) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const std::string& name = conn->name();
+    connections_[name] = conn;
+    LOG_INFO << "Connection added: " << name << ", total: " << connections_.size();
+}
+
+void ConnectionPool::removeConnection(const std::shared_ptr<Connection>& conn) {
+    removeConnection(conn->name());
+}
+
+void ConnectionPool::removeConnection(const std::string& name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = connections_.find(name);
+    if (it != connections_.end()) {
+        connections_.erase(it);
+        LOG_INFO << "Connection removed: " << name << ", total: " << connections_.size();
+    }
+}
+
+std::shared_ptr<Connection> ConnectionPool::getConnection(const std::string& name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = connections_.find(name);
+    if (it != connections_.end()) {
+        return it->second;
+    }
+    return nullptr;
+}
+
+size_t ConnectionPool::size() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return connections_.size();
+}
+
+void ConnectionPool::forEachConnection(const ConnectionCallback& callback) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& pair : connections_) {
+        callback(pair.second);
+    }
+}
+
+void ConnectionPool::removeAllConnections() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    LOG_INFO << "Removing all " << connections_.size() << " connections";
+    for (auto& pair : connections_) {
+        pair.second->shutdown();
+    }
+    connections_.clear();
+}
+
+} // namespace kvstore
