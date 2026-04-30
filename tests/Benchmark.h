@@ -6,17 +6,24 @@
 #include <functional>
 #include <vector>
 #include <map>
+#include <algorithm>
 #include <iostream>
 #include "../src/utils/Logging.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
+#endif
+
 namespace kvstore {
 
-class Timer {
+class BenchTimer {
 private:
     std::chrono::high_resolution_clock::time_point start_time_;
     
 public:
-    Timer() : start_time_(std::chrono::high_resolution_clock::now()) {}
+    BenchTimer() : start_time_(std::chrono::high_resolution_clock::now()) {}
     
     double elapsed() const {
         auto end_time = std::chrono::high_resolution_clock::now();
@@ -67,7 +74,7 @@ public:
     BenchmarkResult run(const std::string& name, 
                        size_t iterations,
                        const std::function<void()>& operation) {
-        Timer timer;
+        BenchTimer timer;
         
         for (size_t i = 0; i < iterations; ++i) {
             operation();
@@ -90,7 +97,7 @@ public:
         double total_time = 0;
         
         for (size_t i = 0; i < iterations; ++i) {
-            Timer op_timer;
+            BenchTimer op_timer;
             operation();
             double latency = op_timer.elapsed() * 1000; // ms
             latencies.push_back(latency);
@@ -129,9 +136,17 @@ public:
 class MemoryMonitor {
 public:
     static size_t getCurrentRSS() {
-        // Windows上获取内存使用量的简化实现
-        // 实际实现应该使用Windows API
+#ifdef _WIN32
+        PROCESS_MEMORY_COUNTERS_EX pmc;
+        if (GetProcessMemoryInfo(GetCurrentProcess(),
+                                 reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
+                                 sizeof(pmc))) {
+            return static_cast<size_t>(pmc.WorkingSetSize / 1024);
+        }
         return 0;
+#else
+        return 0;
+#endif
     }
     
     static void printMemoryUsage(const std::string& context = "") {

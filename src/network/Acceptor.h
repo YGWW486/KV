@@ -4,14 +4,14 @@
 #include "network/EventLoop.h"
 #include "network/Channel.h"
 #include "network/InetAddress.h"
+#include "kvstore/Types.h"
 #include <functional>
-#include <winsock2.h>
 
 namespace kvstore {
 
 class Acceptor {
 public:
-    using NewConnectionCallback = std::function<void(SOCKET sockfd, const InetAddress&)>;
+    using NewConnectionCallback = std::function<void(socket_t sockfd, const InetAddress&)>;
 
     Acceptor(EventLoop* loop, const InetAddress& listenAddr, bool reuseport);
     ~Acceptor();
@@ -23,14 +23,14 @@ public:
 
 private:
     void handleRead();
-    static SOCKET createNonblockingOrDie();
+    static socket_t createNonblockingOrDie();
 
     EventLoop* loop_;
-    SOCKET acceptSocket_;
+    socket_t acceptSocket_;
     std::unique_ptr<Channel> acceptChannel_;
     NewConnectionCallback newConnectionCallback_;
     bool listenning_;
-    SOCKET idleFd_;
+    socket_t idleFd_;
 };
 
 } // namespace kvstore

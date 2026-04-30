@@ -30,7 +30,11 @@ template<>
 inline int Config::get<int>(const string& key, const int& defaultValue) const {
     auto it = data_.find(key);
     if (it != data_.end()) {
-        return std::stoi(it->second);
+        try {
+            return std::stoi(it->second);
+        } catch (...) {
+            return defaultValue;
+        }
     }
     return defaultValue;
 }

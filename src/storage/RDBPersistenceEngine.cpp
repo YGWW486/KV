@@ -147,26 +147,39 @@ bool RDBPersistenceEngine::loadSnapshot(StorageEngine* storage) {
         }
         
         if (line.empty()) continue;
-        
-        // 解析数据行格式: TYPE|KEY|VALUE
-        size_t first_sep = line.find('|');
-        size_t second_sep = line.find('|', first_sep + 1);
-        
-        if (first_sep == std::string::npos || second_sep == std::string::npos) {
+
+        // 解析数据行格式: TYPE|KEY|VALUE (or more fields depending on type)
+        std::vector<std::string> parts;
+        size_t pos = 0;
+        for (int i = 0; i < 3; ++i) {
+            size_t sep = line.find('|', pos);
+            if (sep == std::string::npos) break;
+            parts.push_back(line.substr(pos, sep - pos));
+            pos = sep + 1;
+        }
+        parts.push_back(line.substr(pos)); // rest of line (may contain more |)
+
+        if (parts.size() < 2) {
             LOG_WARN << "跳过格式错误的RDB数据行: " << line;
             continue;
         }
-        
-        std::string type = line.substr(0, first_sep);
-        std::string key = line.substr(first_sep + 1, second_sep - first_sep - 1);
-        std::string value = line.substr(second_sep + 1);
-        
-        if (type == "STRING") {
-            if (storage->set(key, value)) {
-                loaded_count++;
-            }
+
+        const std::string& type = parts[0];
+        const std::string& key = parts[1];
+
+        if (type == "STRING" && parts.size() >= 3) {
+            if (storage->set(key, parts[2])) ++loaded_count;
+        } else if (type == "HASH" && parts.size() >= 4) {
+            if (storage->hset(key, parts[2], parts[3])) ++loaded_count;
+        } else if (type == "LIST" && parts.size() >= 4) {
+            if (storage->rpush(key, parts[3])) ++loaded_count;
+        } else if (type == "SET" && parts.size() >= 3) {
+            if (storage->sadd(key, parts[2])) ++loaded_count;
+        } else if (type == "ZSET" && parts.size() >= 4) {
+            double score = 0.0;
+            try { score = std::stod(parts[2]); } catch (...) { continue; }
+            if (storage->zadd(key, score, parts[3])) ++loaded_count;
         }
-        // 简化实现，只处理STRING类型
     }
     
     file.close();
@@ -175,37 +188,79 @@ bool RDBPersistenceEngine::loadSnapshot(StorageEngine* storage) {
 }
 
 bool RDBPersistenceEngine::saveStringData(const StorageEngine* storage, std::ostream& os) {
-    // 简化实现：获取所有键并保存为STRING类型
-    auto* mutableStorage = const_cast<StorageEngine*>(storage);
-    auto keys = mutableStorage->keys("*");
-    
-    for (const auto& key : keys) {
-        if (auto value = mutableStorage->get(key)) {
-            os << "STRING|" << key << "|" << *value << "\n";
+    auto* ms = const_cast<StorageEngine*>(storage);
+    size_t count = 0;
+    for (const auto& key : ms->keys("*")) {
+        if (ms->getType(key) == KeyType::String) {
+            if (auto value = ms->get(key)) {
+                os << "STRING|" << key << "|" << *value << "\n";
+                ++count;
+            }
         }
     }
-    
+    LOG_INFO << "RDB saved " << count << " string keys";
     return true;
 }
 
 bool RDBPersistenceEngine::saveHashData(const StorageEngine* storage, std::ostream& os) {
-    // 简化实现：这里应该保存哈希数据
-    // 实际实现需要遍历所有哈希键
+    auto* ms = const_cast<StorageEngine*>(storage);
+    size_t count = 0;
+    for (const auto& key : ms->keys("*")) {
+        if (ms->getType(key) == KeyType::Hash) {
+            for (const auto& [field, value] : ms->hgetall(key)) {
+                os << "HASH|" << key << "|" << field << "|" << value << "\n";
+            }
+            ++count;
+        }
+    }
+    LOG_INFO << "RDB saved " << count << " hash keys";
     return true;
 }
 
 bool RDBPersistenceEngine::saveListData(const StorageEngine* storage, std::ostream& os) {
-    // 简化实现：这里应该保存列表数据
+    auto* ms = const_cast<StorageEngine*>(storage);
+    size_t count = 0;
+    for (const auto& key : ms->keys("*")) {
+        if (ms->getType(key) == KeyType::List) {
+            auto elements = ms->lrange(key, 0, -1);
+            for (size_t i = 0; i < elements.size(); ++i) {
+                os << "LIST|" << key << "|" << i << "|" << elements[i] << "\n";
+            }
+            ++count;
+        }
+    }
+    LOG_INFO << "RDB saved " << count << " list keys";
     return true;
 }
 
 bool RDBPersistenceEngine::saveSetData(const StorageEngine* storage, std::ostream& os) {
-    // 简化实现：这里应该保存集合数据
+    auto* ms = const_cast<StorageEngine*>(storage);
+    size_t count = 0;
+    for (const auto& key : ms->keys("*")) {
+        if (ms->getType(key) == KeyType::Set) {
+            for (const auto& member : ms->smembers(key)) {
+                os << "SET|" << key << "|" << member << "\n";
+            }
+            ++count;
+        }
+    }
+    LOG_INFO << "RDB saved " << count << " set keys";
     return true;
 }
 
 bool RDBPersistenceEngine::saveSortedSetData(const StorageEngine* storage, std::ostream& os) {
-    // 简化实现：这里应该保存有序集合数据
+    auto* ms = const_cast<StorageEngine*>(storage);
+    size_t count = 0;
+    for (const auto& key : ms->keys("*")) {
+        if (ms->getType(key) == KeyType::ZSet) {
+            auto members = ms->zrange(key, 0, -1);
+            for (const auto& [score, member] : members) {
+                os << "ZSET|" << key << "|" << score << "|" << member << "\n";
+            }
+            ++count;
+        }
+    }
+    LOG_INFO << "RDB saved " << count << " zset keys";
     return true;
 }
 

@@ -10,6 +10,14 @@ namespace kvstore {
 
 thread_local EventLoop* t_loopInThisThread = nullptr;
 
+namespace {
+
+Timestamp makeExpiration(double delay) {
+    return addTime(Timestamp::now(), delay);
+}
+
+} // namespace
+
 EventLoop::EventLoop()
     : looping_(false)
     , quit_(false)
@@ -17,6 +25,7 @@ EventLoop::EventLoop()
     , callingPendingFunctors_(false)
     , threadId_(std::this_thread::get_id())
     , currentActiveChannel_(nullptr)
+    , nextTimerSequence_(1)
 {
     LOG_DEBUG << "EventLoop created " << this << " in thread " << threadId_;
     if (t_loopInThisThread) {
@@ -54,6 +63,8 @@ void EventLoop::loop() {
         }
         currentActiveChannel_ = nullptr;
         eventHandling_ = false;
+
+        processTimers();
         
         doPendingFunctors();
     }
@@ -110,6 +121,45 @@ void EventLoop::wakeup() {
 void EventLoop::handleRead() {
 }
 
+TimerId EventLoop::addTimer(TimerCallback cb, Timestamp when, double interval) {
+    std::lock_guard<std::mutex> lock(timerMutex_);
+    const int64_t sequence = nextTimerSequence_++;
+    timers_.push_back(TimerEntry{sequence, when, std::move(cb), interval, interval > 0.0});
+    return TimerId(sequence, sequence);
+}
+
+void EventLoop::processTimers() {
+    const Timestamp now = Timestamp::now();
+    std::vector<TimerEntry> expired;
+
+    {
+        std::lock_guard<std::mutex> lock(timerMutex_);
+        auto it = timers_.begin();
+        while (it != timers_.end()) {
+            if (cancelledTimers_.count(it->sequence)) {
+                it = timers_.erase(it);
+                continue;
+            }
+            if (timeDifference(it->expiration, now) <= 0.0) {
+                expired.push_back(*it);
+                if (it->repeat) {
+                    it->expiration = addTime(now, it->interval);
+                    ++it;
+                } else {
+                    it = timers_.erase(it);
+                }
+            } else {
+                ++it;
+            }
+        }
+        cancelledTimers_.clear();
+    }
+
+    for (const auto& timer : expired) {
+        timer.callback();
+    }
+}
+
 bool EventLoop::isInLoopThread() const {
     return threadId_ == std::this_thread::get_id();
 }
@@ -121,19 +171,21 @@ void EventLoop::assertInLoopThread() const {
     }
 }
 
-TimerId EventLoop::runAt(Timestamp /*time*/, TimerCallback /*cb*/) {
-    return TimerId();
+TimerId EventLoop::runAt(Timestamp time, TimerCallback cb) {
+    return addTimer(std::move(cb), time, 0.0);
 }
 
-TimerId EventLoop::runAfter(double /*delay*/, TimerCallback /*cb*/) {
-    return TimerId();
+TimerId EventLoop::runAfter(double delay, TimerCallback cb) {
+    return addTimer(std::move(cb), makeExpiration(delay), 0.0);
 }
 
-TimerId EventLoop::runEvery(double /*interval*/, TimerCallback /*cb*/) {
-    return TimerId();
+TimerId EventLoop::runEvery(double interval, TimerCallback cb) {
+    return addTimer(std::move(cb), makeExpiration(interval), interval);
 }
 
-void EventLoop::cancel(TimerId /*timerId*/) {
+void EventLoop::cancel(TimerId timerId) {
+    std::lock_guard<std::mutex> lock(timerMutex_);
+    cancelledTimers_.insert(timerId.sequence_);
 }
 
 } // namespace kvstore

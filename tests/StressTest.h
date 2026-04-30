@@ -26,7 +26,7 @@ public:
         failed_ops_ = 0;
         stop_ = false;
         
-        Timer timer;
+        BenchTimer timer;
         std::vector<std::thread> threads;
         
         // 启动工作线程

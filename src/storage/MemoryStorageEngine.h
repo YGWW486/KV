@@ -28,6 +28,7 @@ public:
     bool hexists(const std::string& key, const std::string& field) override;
     std::vector<std::string> hkeys(const std::string& key) override;
     std::vector<std::string> hvals(const std::string& key) override;
+    std::vector<std::pair<std::string, std::string>> hgetall(const std::string& key) override;
     size_t hlen(const std::string& key) override;
     
     // --- List 操作
@@ -54,6 +55,7 @@ public:
     
     // --- 通用操作
     std::vector<std::string> keys(const std::string& pattern) override;
+    KeyType getType(const std::string& key) override;
     bool flushall() override;
     
 private:

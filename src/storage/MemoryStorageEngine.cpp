@@ -2,9 +2,60 @@
 
 namespace kvstore {
 
+namespace {
+
+bool matchPattern(const std::string& pattern, const std::string& text) {
+    size_t p = 0;
+    size_t t = 0;
+    size_t star = std::string::npos;
+    size_t match = 0;
+
+    while (t < text.size()) {
+        if (p < pattern.size() && (pattern[p] == '?' || pattern[p] == text[t])) {
+            ++p;
+            ++t;
+        } else if (p < pattern.size() && pattern[p] == '*') {
+            star = p++;
+            match = t;
+        } else if (star != std::string::npos) {
+            p = star + 1;
+            t = ++match;
+        } else {
+            return false;
+        }
+    }
+
+    while (p < pattern.size() && pattern[p] == '*') {
+        ++p;
+    }
+
+    return p == pattern.size();
+}
+
+bool eraseKeyFromAllTypes(
+    const std::string& key,
+    std::unordered_map<std::string, std::string>& string_map,
+    std::unordered_map<std::string, std::unordered_map<std::string, std::string>>& hash_map,
+    std::unordered_map<std::string, std::list<std::string>>& list_map,
+    std::unordered_map<std::string, std::unordered_set<std::string>>& set_map,
+    std::unordered_map<std::string, std::unordered_map<std::string, double>>& z_score_map,
+    std::unordered_map<std::string, std::map<double, std::unordered_set<std::string>>>& z_order_map) {
+    bool erased = false;
+    erased |= string_map.erase(key) > 0;
+    erased |= hash_map.erase(key) > 0;
+    erased |= list_map.erase(key) > 0;
+    erased |= set_map.erase(key) > 0;
+    erased |= z_score_map.erase(key) > 0;
+    erased |= z_order_map.erase(key) > 0;
+    return erased;
+}
+
+} // namespace
+
 // ==================== String 操作 ====================
 bool MemoryStorageEngine::set(const std::string& key, const std::string& value) {
     std::lock_guard<std::mutex> lock(mutex_);
+    eraseKeyFromAllTypes(key, string_map_, hash_map_, list_map_, set_map_, z_score_map_, z_order_map_);
     string_map_[key] = value;
     return true;
 }
@@ -20,17 +71,25 @@ std::optional<std::string> MemoryStorageEngine::get(const std::string& key) {
 
 bool MemoryStorageEngine::del(const std::string& key) {
     std::lock_guard<std::mutex> lock(mutex_);
-    return string_map_.erase(key) > 0;
+    return eraseKeyFromAllTypes(key, string_map_, hash_map_, list_map_, set_map_, z_score_map_, z_order_map_);
 }
 
 bool MemoryStorageEngine::exists(const std::string& key) {
     std::lock_guard<std::mutex> lock(mutex_);
-    return string_map_.count(key) > 0;
+    return string_map_.count(key) > 0
+        || hash_map_.count(key) > 0
+        || list_map_.count(key) > 0
+        || set_map_.count(key) > 0
+        || z_score_map_.count(key) > 0;
 }
 
 // ==================== Hash 操作 ====================
 bool MemoryStorageEngine::hset(const std::string& key, const std::string& field, const std::string& value) {
     std::lock_guard<std::mutex> lock(mutex_);
+    auto it = hash_map_.find(key);
+    if (it == hash_map_.end()) {
+        eraseKeyFromAllTypes(key, string_map_, hash_map_, list_map_, set_map_, z_score_map_, z_order_map_);
+    }
     hash_map_[key][field] = value;
     return true;
 }
@@ -102,15 +161,36 @@ size_t MemoryStorageEngine::hlen(const std::string& key) {
     return hash_it->second.size();
 }
 
+std::vector<std::pair<std::string, std::string>> MemoryStorageEngine::hgetall(const std::string& key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::pair<std::string, std::string>> result;
+    auto hash_it = hash_map_.find(key);
+    if (hash_it == hash_map_.end()) {
+        return result;
+    }
+    for (const auto& pair : hash_it->second) {
+        result.emplace_back(pair.first, pair.second);
+    }
+    return result;
+}
+
 // ==================== List 操作 ====================
 bool MemoryStorageEngine::lpush(const std::string& key, const std::string& value) {
     std::lock_guard<std::mutex> lock(mutex_);
+    auto it = list_map_.find(key);
+    if (it == list_map_.end()) {
+        eraseKeyFromAllTypes(key, string_map_, hash_map_, list_map_, set_map_, z_score_map_, z_order_map_);
+    }
     list_map_[key].push_front(value);
     return true;
 }
 
 bool MemoryStorageEngine::rpush(const std::string& key, const std::string& value) {
     std::lock_guard<std::mutex> lock(mutex_);
+    auto it = list_map_.find(key);
+    if (it == list_map_.end()) {
+        eraseKeyFromAllTypes(key, string_map_, hash_map_, list_map_, set_map_, z_score_map_, z_order_map_);
+    }
     list_map_[key].push_back(value);
     return true;
 }
@@ -181,6 +261,10 @@ size_t MemoryStorageEngine::llen(const std::string& key) {
 // ==================== Set 操作 ====================
 bool MemoryStorageEngine::sadd(const std::string& key, const std::string& value) {
     std::lock_guard<std::mutex> lock(mutex_);
+    auto it = set_map_.find(key);
+    if (it == set_map_.end()) {
+        eraseKeyFromAllTypes(key, string_map_, hash_map_, list_map_, set_map_, z_score_map_, z_order_map_);
+    }
     return set_map_[key].insert(value).second;
 }
 
@@ -231,7 +315,11 @@ size_t MemoryStorageEngine::scard(const std::string& key) {
 // ==================== Sorted Set 操作 ====================
 bool MemoryStorageEngine::zadd(const std::string& key, double score, const std::string& value) {
     std::lock_guard<std::mutex> lock(mutex_);
-    
+    auto score_map_it = z_score_map_.find(key);
+    if (score_map_it == z_score_map_.end()) {
+        eraseKeyFromAllTypes(key, string_map_, hash_map_, list_map_, set_map_, z_score_map_, z_order_map_);
+    }
+
     // 如果 value 已经存在，先移除旧的
     auto& score_map = z_score_map_[key];
     auto& order_map = z_order_map_[key];
@@ -353,16 +441,35 @@ size_t MemoryStorageEngine::zcard(const std::string& key) {
 }
 
 // ==================== 通用操作 ====================
+KeyType MemoryStorageEngine::getType(const std::string& key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (string_map_.count(key)) return KeyType::String;
+    if (hash_map_.count(key))   return KeyType::Hash;
+    if (list_map_.count(key))   return KeyType::List;
+    if (set_map_.count(key))    return KeyType::Set;
+    if (z_score_map_.count(key)) return KeyType::ZSet;
+    return KeyType::None;
+}
+
 std::vector<std::string> MemoryStorageEngine::keys(const std::string& pattern) {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<std::string> result;
-    
-    for (const auto& p : string_map_) result.push_back(p.first);
-    for (const auto& p : hash_map_) result.push_back(p.first);
-    for (const auto& p : list_map_) result.push_back(p.first);
-    for (const auto& p : set_map_) result.push_back(p.first);
-    for (const auto& p : z_score_map_) result.push_back(p.first);
-    
+    std::unordered_set<std::string> seen;
+
+    auto collect = [&](const auto& map) {
+        for (const auto& p : map) {
+            if (seen.insert(p.first).second && matchPattern(pattern, p.first)) {
+                result.push_back(p.first);
+            }
+        }
+    };
+
+    collect(string_map_);
+    collect(hash_map_);
+    collect(list_map_);
+    collect(set_map_);
+    collect(z_score_map_);
+
     return result;
 }
 

@@ -45,12 +45,18 @@ void ConnectionPool::forEachConnection(const ConnectionCallback& callback) {
 }
 
 void ConnectionPool::removeAllConnections() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    LOG_INFO << "Removing all " << connections_.size() << " connections";
-    for (auto& pair : connections_) {
-        pair.second->shutdown();
+    std::vector<std::shared_ptr<Connection>> conns;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        LOG_INFO << "Removing all " << connections_.size() << " connections";
+        for (auto& pair : connections_) {
+            conns.push_back(pair.second);
+        }
+        connections_.clear();
     }
-    connections_.clear();
+    for (auto& conn : conns) {
+        conn->shutdown();
+    }
 }
 
 } // namespace kvstore

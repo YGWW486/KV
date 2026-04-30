@@ -5,7 +5,7 @@
 
 namespace kvstore {
 
-Connection::Connection(EventLoop* loop, const std::string& name, SOCKET sockfd,
+Connection::Connection(EventLoop* loop, const std::string& name, socket_t sockfd,
                        const InetAddress& localAddr, const InetAddress& peerAddr)
     : loop_(loop), name_(name), state_(kConnecting), sockfd_(sockfd),
       localAddr_(localAddr), peerAddr_(peerAddr) {

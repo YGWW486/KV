@@ -10,7 +10,6 @@
 #include <memory>
 #include <functional>
 #include <atomic>
-#include <winsock2.h>
 
 namespace kvstore {
 
@@ -23,7 +22,7 @@ public:
     using CloseCallback = std::function<void(const std::shared_ptr<Connection>&)>;
     using WriteCompleteCallback = std::function<void(const std::shared_ptr<Connection>&)>;
 
-    Connection(EventLoop* loop, const std::string& name, SOCKET sockfd,
+    Connection(EventLoop* loop, const std::string& name, socket_t sockfd,
                const InetAddress& localAddr, const InetAddress& peerAddr);
     ~Connection();
 
@@ -59,7 +58,7 @@ private:
     EventLoop* loop_;
     const std::string name_;
     State state_;
-    SOCKET sockfd_;
+    socket_t sockfd_;
     std::unique_ptr<Channel> channel_;
     InetAddress localAddr_;
     InetAddress peerAddr_;

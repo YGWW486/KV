@@ -31,7 +31,7 @@ Logger::Logger(const char* file, int line, LogLevel level, const char* func)
     formatTime();
     stream_ << " [" << getLogLevelString(level) << "] "
             << basename(file_) << ":" << line_ << " - "
-            << func_ << "] ";
+            << func_ << " ";
 }
 
 Logger::~Logger() {

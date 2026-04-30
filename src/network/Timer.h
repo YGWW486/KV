@@ -13,6 +13,7 @@ public:
     TimerId() : id_(0), sequence_(0) {}
     TimerId(int64_t id, int64_t seq) : id_(id), sequence_(seq) {}
     
+    friend class EventLoop;
     friend class TimerQueue;
     
 private:

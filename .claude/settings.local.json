@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmake --build build)",
+      "Bash(./build/tests/Debug/test_resp_regression.exe)",
+      "Bash(./build/tests/Debug/test_storage_keys.exe)",
+      "Bash(./build/tests/Debug/test_integration.exe)",
+      "Bash(./build/bin/Debug/test_storage.exe)"
+    ]
+  }
+}

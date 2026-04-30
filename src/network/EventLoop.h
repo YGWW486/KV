@@ -3,17 +3,17 @@
 
 #include "kvstore/Types.h"
 #include "utils/Timestamp.h"
+#include "network/Timer.h"
 #include <functional>
 #include <vector>
 #include <mutex>
 #include <atomic>
 #include <thread>
+#include <unordered_set>
 
 namespace kvstore {
 
 class Channel;
-class TimerId;
-
 class EventLoop {
 public:
     using Functor = std::function<void()>;
@@ -49,6 +49,9 @@ protected:
     void handleRead();
     void doPendingFunctors();
 
+    TimerId addTimer(TimerCallback cb, Timestamp when, double interval);
+    void processTimers();
+
     std::atomic<bool> looping_;
     std::atomic<bool> quit_;
     bool eventHandling_;
@@ -62,6 +65,19 @@ protected:
 
     std::mutex mutex_;
     std::vector<Functor> pendingFunctors_;
+
+    struct TimerEntry {
+        int64_t sequence;
+        Timestamp expiration;
+        TimerCallback callback;
+        double interval;
+        bool repeat;
+    };
+
+    std::mutex timerMutex_;
+    std::vector<TimerEntry> timers_;
+    std::unordered_set<int64_t> cancelledTimers_;
+    int64_t nextTimerSequence_;
 };
 
 } // namespace kvstore

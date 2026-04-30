@@ -8,11 +8,23 @@
 
 namespace kvstore {
 
+enum class KeyType {
+    String,
+    Hash,
+    List,
+    Set,
+    ZSet,
+    None
+};
+
 // 存储引擎接口
 class StorageEngine {
 public:
     virtual ~StorageEngine() = default;
-    
+
+    // --- 类型查询
+    virtual KeyType getType(const std::string& key) = 0;
+
     // --- String 操作
     virtual bool set(const std::string& key, const std::string& value) = 0;
     virtual std::optional<std::string> get(const std::string& key) = 0;
@@ -26,6 +38,7 @@ public:
     virtual bool hexists(const std::string& key, const std::string& field) = 0;
     virtual std::vector<std::string> hkeys(const std::string& key) = 0;
     virtual std::vector<std::string> hvals(const std::string& key) = 0;
+    virtual std::vector<std::pair<std::string, std::string>> hgetall(const std::string& key) = 0;
     virtual size_t hlen(const std::string& key) = 0;
     
     // --- List 操作

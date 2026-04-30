@@ -6,8 +6,8 @@
 
 namespace kvstore {
 
-SOCKET Acceptor::createNonblockingOrDie() {
-    SOCKET sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+socket_t Acceptor::createNonblockingOrDie() {
+    socket_t sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     u_long mode = 1;
     ioctlsocket(sockfd, FIONBIO, &mode);
     return sockfd;
@@ -17,7 +17,7 @@ Acceptor::Acceptor(EventLoop* loop, const InetAddress& listenAddr, bool reusepor
     : loop_(loop)
     , acceptSocket_(createNonblockingOrDie())
     , listenning_(false)
-    , idleFd_(INVALID_SOCKET)
+    , idleFd_(kInvalidSocket)
 {
     if (reuseport) {
         int on = 1;
@@ -31,7 +31,7 @@ Acceptor::Acceptor(EventLoop* loop, const InetAddress& listenAddr, bool reusepor
 
 Acceptor::~Acceptor() {
     closesocket(acceptSocket_);
-    if (idleFd_ != INVALID_SOCKET) {
+    if (idleFd_ != kInvalidSocket) {
         closesocket(idleFd_);
     }
 }
@@ -49,8 +49,8 @@ void Acceptor::handleRead() {
     sockaddr_in addr;
     int addrlen = sizeof(addr);
     
-    SOCKET connfd = ::accept(acceptSocket_, reinterpret_cast<sockaddr*>(&addr), &addrlen);
-    if (connfd != INVALID_SOCKET) {
+    socket_t connfd = ::accept(acceptSocket_, reinterpret_cast<sockaddr*>(&addr), &addrlen);
+    if (connfd != kInvalidSocket) {
         peerAddr.setSockAddrInet(addr);
         if (newConnectionCallback_) {
             newConnectionCallback_(connfd, peerAddr);

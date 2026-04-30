@@ -26,6 +26,7 @@ bool Config::load(const string& filename) {
     buffer << file.rdbuf();
     file.close();
 
+    data_.clear();
     parse(buffer.str());
     LOG_INFO << "Loaded config from " << filename;
     return true;
