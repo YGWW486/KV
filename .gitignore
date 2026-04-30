@@ -30,6 +30,7 @@ Makefile
 !CMakeLists.txt
 *.md
 *.mdc
+/.cursor
 # Compiled files
 *.o
 *.obj
