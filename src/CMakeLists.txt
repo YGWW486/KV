@@ -49,6 +49,7 @@ set(PERSISTENCE_SOURCES
 
 # 命令层 (P4阶段添加)
 set(COMMANDS_SOURCES
+    commands/CommandDispatcher.cpp
 )
 
 # ==============================================================================

@@ -137,7 +137,11 @@ void Connection::handleRead(Timestamp receiveTime) {
     } else if (n == 0) {
         handleClose();
     } else {
-        LOG_ERROR << "Read error";
+        int err = WSAGetLastError();
+        if (err == WSAEWOULDBLOCK) {
+            return; // 非阻塞 socket 暂无数据，等待下一轮 IOCP 通知
+        }
+        LOG_ERROR << "Read error: " << err;
         handleError();
     }
 }

@@ -47,16 +47,15 @@ public:
     void recordWrite(const std::string& command) override;
     void setPolicy(AOFPolicy policy) override;
     std::string getStatus() const override;
-    
+
+    void syncAOF();
+
 private:
     std::string aof_path_;
     AOFPolicy policy_;
     
     // 重写AOF文件（压缩）
     bool rewriteAOF(const StorageEngine* storage);
-    
-    // 同步AOF文件
-    void syncAOF();
 };
 
 // RDB持久化引擎

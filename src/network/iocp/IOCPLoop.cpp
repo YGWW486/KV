@@ -104,6 +104,7 @@ void IOCPLoop::loop() {
         currentActiveChannel_ = nullptr;
         eventHandling_ = false;
 
+        processTimers();
         doPendingFunctors();
     }
 

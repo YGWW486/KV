@@ -56,20 +56,47 @@ bool AOFPersistenceEngine::load(StorageEngine* storage) {
 
         if (cmd == "SET" && args.size() >= 3) {
             ok = storage->set(args[1], args[2]);
+        } else if (cmd == "DEL" && args.size() >= 2) {
+            ok = storage->del(args[1]);
         } else if (cmd == "HSET" && args.size() >= 4) {
             ok = storage->hset(args[1], args[2], args[3]);
+        } else if (cmd == "HDEL" && args.size() >= 3) {
+            ok = storage->hdel(args[1], args[2]);
         } else if (cmd == "RPUSH" && args.size() >= 3) {
-            ok = storage->rpush(args[1], args[2]);
+            for (size_t i = 2; i < args.size(); ++i)
+                ok = storage->rpush(args[1], args[i]) && ok;
+        } else if (cmd == "LPUSH" && args.size() >= 3) {
+            for (size_t i = 2; i < args.size(); ++i)
+                ok = storage->lpush(args[1], args[i]) && ok;
+        } else if (cmd == "LPOP" && args.size() >= 2) {
+            storage->lpop(args[1]);
+        } else if (cmd == "RPOP" && args.size() >= 2) {
+            storage->rpop(args[1]);
         } else if (cmd == "SADD" && args.size() >= 3) {
             ok = storage->sadd(args[1], args[2]);
+        } else if (cmd == "SREM" && args.size() >= 3) {
+            ok = storage->srem(args[1], args[2]);
         } else if (cmd == "ZADD" && args.size() >= 4) {
             double score = 0.0;
             try { score = std::stod(args[2]); } catch (...) { ok = false; }
             if (ok) ok = storage->zadd(args[1], score, args[3]);
-        } else if (cmd == "DEL" && args.size() >= 2) {
-            ok = storage->del(args[1]);
+        } else if (cmd == "ZREM" && args.size() >= 3) {
+            ok = storage->zrem(args[1], args[2]);
+        } else if (cmd == "INCR" && args.size() >= 2) {
+            auto val = storage->get(args[1]);
+            int64_t n = val.has_value() ? std::stoll(*val) : 0;
+            storage->set(args[1], std::to_string(n + 1));
+        } else if (cmd == "DECR" && args.size() >= 2) {
+            auto val = storage->get(args[1]);
+            int64_t n = val.has_value() ? std::stoll(*val) : 0;
+            storage->set(args[1], std::to_string(n - 1));
+        } else if (cmd == "APPEND" && args.size() >= 3) {
+            auto val = storage->get(args[1]);
+            std::string s = val.has_value() ? *val : "";
+            s += args[2];
+            storage->set(args[1], s);
         } else {
-            continue; // skip unknown commands
+            continue;
         }
 
         if (!ok) {
@@ -85,7 +112,6 @@ bool AOFPersistenceEngine::load(StorageEngine* storage) {
 }
 
 bool AOFPersistenceEngine::save(const StorageEngine* storage) {
-    // AOF的保存实际上是重写AOF文件
     return rewriteAOF(storage);
 }
 
@@ -94,21 +120,20 @@ void AOFPersistenceEngine::recordWrite(const std::string& command) {
         LOG_WARN << "记录空命令到AOF";
         return;
     }
-    
+
     std::ofstream file(aof_path_, std::ios::app);
     if (!file.is_open()) {
         LOG_ERROR << "无法打开AOF文件进行追加: " << aof_path_;
         return;
     }
-    
+
     file << command << "\n";
     file.close();
-    
-    // 根据策略决定是否同步
+
     if (policy_ == AOFPolicy::ALWAYS) {
         syncAOF();
     }
-    
+
     LOG_DEBUG << "记录命令到AOF: " << command;
 }
 
@@ -120,13 +145,13 @@ void AOFPersistenceEngine::setPolicy(AOFPolicy policy) {
 std::string AOFPersistenceEngine::getStatus() const {
     std::ifstream file(aof_path_);
     std::string status = "AOF持久化引擎 - 策略: ";
-    
+
     switch (policy_) {
         case AOFPolicy::ALWAYS: status += "ALWAYS"; break;
         case AOFPolicy::EVERYSEC: status += "EVERYSEC"; break;
         case AOFPolicy::NO: status += "NO"; break;
     }
-    
+
     if (file.is_open()) {
         file.seekg(0, std::ios::end);
         size_t size = file.tellg();
@@ -135,7 +160,7 @@ std::string AOFPersistenceEngine::getStatus() const {
     } else {
         status += ", 文件不存在";
     }
-    
+
     return status;
 }
 
@@ -206,7 +231,6 @@ bool AOFPersistenceEngine::rewriteAOF(const StorageEngine* storage) {
 
     temp_file.close();
 
-    // Windows下rename不会覆盖已存在文件，先删除旧文件再替换。
     std::remove(aof_path_.c_str());
     if (std::rename(temp_path.c_str(), aof_path_.c_str()) != 0) {
         LOG_ERROR << "重写AOF文件失败，无法替换原文件";
@@ -218,8 +242,6 @@ bool AOFPersistenceEngine::rewriteAOF(const StorageEngine* storage) {
 }
 
 void AOFPersistenceEngine::syncAOF() {
-    // 在Windows上，简单的文件关闭操作通常足够
-    // 如果需要更强的同步保证，可以使用FlushFileBuffers等API
     LOG_DEBUG << "AOF文件同步完成";
 }
 
