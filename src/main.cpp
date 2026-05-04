@@ -12,6 +12,8 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <memory>
+#include <stdexcept>
+#include <string>
 
 using namespace kvstore;
 
@@ -29,13 +31,21 @@ class KvServer {
 public:
     KvServer(IOCPLoop* loop, uint16_t port)
         : loop_(loop), aof_("kvstore.aof"), rdb_("kvstore.rdb"), dispatcher_(&storage_, &aof_) {
-        // 先加载 RDB 快照（更快），再重放 AOF（增量）
         rdb_.load(&storage_);
         aof_.load(&storage_);
 
         listenSock_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (listenSock_ == INVALID_SOCKET) {
+            throw std::runtime_error("KvServer: socket failed: " + std::to_string(WSAGetLastError()));
+        }
+
         u_long mode = 1;
-        ioctlsocket(listenSock_, FIONBIO, &mode);
+        if (ioctlsocket(listenSock_, FIONBIO, &mode) != 0) {
+            int err = WSAGetLastError();
+            closesocket(listenSock_);
+            listenSock_ = INVALID_SOCKET;
+            throw std::runtime_error("KvServer: ioctlsocket FIONBIO failed: " + std::to_string(err));
+        }
 
         int on = 1;
         setsockopt(listenSock_, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&on), sizeof(on));
@@ -44,8 +54,25 @@ public:
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = htonl(INADDR_ANY);
         addr.sin_port = htons(port);
-        bind(listenSock_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-        ::listen(listenSock_, SOMAXCONN);
+        if (bind(listenSock_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
+            int err = WSAGetLastError();
+            closesocket(listenSock_);
+            listenSock_ = INVALID_SOCKET;
+            throw std::runtime_error("KvServer: bind failed: " + std::to_string(err));
+        }
+        if (::listen(listenSock_, SOMAXCONN) == SOCKET_ERROR) {
+            int err = WSAGetLastError();
+            closesocket(listenSock_);
+            listenSock_ = INVALID_SOCKET;
+            throw std::runtime_error("KvServer: listen failed: " + std::to_string(err));
+        }
+    }
+
+    ~KvServer() {
+        if (listenSock_ != INVALID_SOCKET) {
+            closesocket(listenSock_);
+            listenSock_ = INVALID_SOCKET;
+        }
     }
 
     void start() {
@@ -58,6 +85,9 @@ public:
 
 private:
     void acceptLoop() {
+        if (listenSock_ == INVALID_SOCKET) {
+            return;
+        }
         sockaddr_in addr{};
         int addrlen = sizeof(addr);
         SOCKET connfd = ::accept(listenSock_, reinterpret_cast<sockaddr*>(&addr), &addrlen);
@@ -113,7 +143,7 @@ private:
     }
 
     IOCPLoop* loop_;
-    SOCKET listenSock_;
+    SOCKET listenSock_ = INVALID_SOCKET;
     ConnectionPool connPool_;
     RESPParser parser_;
     MemoryStorageEngine storage_;
@@ -142,18 +172,23 @@ int main() {
     LOG_INFO << "  KV-Store Server v0.1.0";
     LOG_INFO << "========================================";
 
-    IOCPLoop loop;
-    g_loop = &loop;
+    try {
+        IOCPLoop loop;
+        KvServer server(&loop, static_cast<uint16_t>(port));
+        g_loop = &loop;
+        server.start();
 
-    KvServer server(&loop, static_cast<uint16_t>(port));
-    server.start();
+        LOG_INFO << "KV-Store listening on port " << port;
 
-    LOG_INFO << "KV-Store listening on port " << port;
+        loop.loop();
+    } catch (const std::exception& e) {
+        LOG_ERROR << e.what();
+        g_loop = nullptr;
+        return 1;
+    }
 
-    loop.loop();
-
+    g_loop = nullptr;
     LOG_INFO << "KV-Store shutting down...";
-    WSACleanup();
     LOG_INFO << "KV-Store stopped.";
     return 0;
 }

@@ -11,11 +11,12 @@ cmake-build-*/
 *.dylib
 *.out
 *.log
-
+.claude/
 
 # IDE
 .idea/
 .vscode/
+.vs/
 *.suo
 *.user
 *.userosscache
@@ -30,7 +31,7 @@ Makefile
 !CMakeLists.txt
 *.md
 *.mdc
-/.cursor
+.cursor/
 # Compiled files
 *.o
 *.obj
@@ -46,3 +47,4 @@ Makefile
 *~
 .DS_Store
 Thumbs.db
+.claude/settings.local.json

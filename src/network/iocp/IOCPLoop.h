@@ -39,7 +39,7 @@ private:
         void reset();
     };
 
-    void wakeup();
+    void wakeup() override;
     void handleWakeup();
     void handleRead(); // 兼容基类（保留）
     void handleCompletions();
@@ -48,13 +48,13 @@ private:
     void postWrite(Channel* channel);
 
     HANDLE iocpHandle_;
-    HANDLE wakeupEvent_;
     SOCKET wakeupSocket_[2];
     std::unordered_map<SOCKET, Channel*> channels_;
     std::unordered_map<SOCKET, OverlappedContext*> readContexts_;
     std::unordered_map<SOCKET, OverlappedContext*> writeContexts_;
     mutable std::mutex channelsMutex_;
     std::atomic<bool> quitPending_;
+    bool wsaStartedByIocpLoop_ = false;
 };
 
 } // namespace kvstore

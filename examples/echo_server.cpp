@@ -6,6 +6,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <memory>
+#include <stdexcept>
 
 using namespace kvstore;
 
@@ -61,15 +62,25 @@ int main() {
     LOG_INFO << "=== Echo Server starting ===";
 
     WSADATA wsaData;
-    WSAStartup(MAKEWORD(2, 2), &wsaData);
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        LOG_FATAL << "WSAStartup failed";
+        return 1;
+    }
 
-    IOCPLoop loop;
-    InetAddress listenAddr(6379);
-    EchoServer server(&loop, listenAddr);
-    server.start();
+    try {
+        IOCPLoop loop;
+        InetAddress listenAddr(6379);
+        EchoServer server(&loop, listenAddr);
+        server.start();
 
-    LOG_INFO << "EchoServer listening on port " << listenAddr.port() << ", waiting for connections...";
-    loop.loop();
+        LOG_INFO << "EchoServer listening on port " << listenAddr.port()
+                  << ", waiting for connections...";
+        loop.loop();
+    } catch (const std::exception& e) {
+        LOG_ERROR << e.what();
+        WSACleanup();
+        return 1;
+    }
 
     WSACleanup();
     LOG_INFO << "=== Echo Server stopped ===";

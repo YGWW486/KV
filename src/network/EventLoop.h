@@ -45,7 +45,7 @@ public:
     void cancel(TimerId timerId);
 
 protected:
-    void wakeup();
+    virtual void wakeup();
     void handleRead();
     void doPendingFunctors();
 

@@ -7,6 +7,8 @@
 #include <ws2tcpip.h>
 #include <iostream>
 #include <cassert>
+#include <stdexcept>
+#include <string>
 
 namespace kvstore {
 
@@ -24,63 +26,146 @@ void IOCPLoop::OverlappedContext::reset() {
 }
 
 IOCPLoop::IOCPLoop()
-    : iocpHandle_(INVALID_HANDLE_VALUE)
-    , wakeupEvent_(INVALID_HANDLE_VALUE)
+    : iocpHandle_(nullptr)
+    , wakeupSocket_{INVALID_SOCKET, INVALID_SOCKET}
     , quitPending_(false)
 {
-    // 初始化 Winsock
     WSADATA wsaData;
     int rc = WSAStartup(MAKEWORD(2, 2), &wsaData);
     if (rc != 0) {
-        LOG_FATAL << "WSAStartup failed: " << rc;
+        throw std::runtime_error("IOCPLoop: WSAStartup failed: " + std::to_string(rc));
     }
+    wsaStartedByIocpLoop_ = true;
 
-    // 创建 IOCP 端口
     iocpHandle_ = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 0);
     if (iocpHandle_ == nullptr) {
-        LOG_FATAL << "CreateIoCompletionPort failed: " << GetLastError();
+        WSACleanup();
+        wsaStartedByIocpLoop_ = false;
+        throw std::runtime_error("IOCPLoop: CreateIoCompletionPort failed: " +
+                                 std::to_string(static_cast<int>(GetLastError())));
     }
 
-    // 创建 wakeup event
-    wakeupEvent_ = CreateEventA(nullptr, FALSE, FALSE, nullptr);
-
-    // 创建 socket pair 用于 wakeup (Windows 简化版)
-    // Windows 没有 socketpair，我们用 loopback socket
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = 0;
 
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-    listen(s, 1);
+    if (s == INVALID_SOCKET) {
+        CloseHandle(iocpHandle_);
+        iocpHandle_ = nullptr;
+        WSACleanup();
+        wsaStartedByIocpLoop_ = false;
+        throw std::runtime_error("IOCPLoop: listener socket failed: " +
+                                 std::to_string(WSAGetLastError()));
+    }
+
+    if (bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
+        int err = WSAGetLastError();
+        closesocket(s);
+        CloseHandle(iocpHandle_);
+        iocpHandle_ = nullptr;
+        WSACleanup();
+        wsaStartedByIocpLoop_ = false;
+        throw std::runtime_error("IOCPLoop: bind listener failed: " + std::to_string(err));
+    }
+
+    if (listen(s, 1) == SOCKET_ERROR) {
+        int err = WSAGetLastError();
+        closesocket(s);
+        CloseHandle(iocpHandle_);
+        iocpHandle_ = nullptr;
+        WSACleanup();
+        wsaStartedByIocpLoop_ = false;
+        throw std::runtime_error("IOCPLoop: listen failed: " + std::to_string(err));
+    }
 
     int len = sizeof(addr);
-    getsockname(s, reinterpret_cast<sockaddr*>(&addr), &len);
+    if (getsockname(s, reinterpret_cast<sockaddr*>(&addr), &len) == SOCKET_ERROR) {
+        int err = WSAGetLastError();
+        closesocket(s);
+        CloseHandle(iocpHandle_);
+        iocpHandle_ = nullptr;
+        WSACleanup();
+        wsaStartedByIocpLoop_ = false;
+        throw std::runtime_error("IOCPLoop: getsockname failed: " + std::to_string(err));
+    }
 
     wakeupSocket_[0] = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    connect(wakeupSocket_[0], reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    if (wakeupSocket_[0] == INVALID_SOCKET) {
+        int err = WSAGetLastError();
+        closesocket(s);
+        CloseHandle(iocpHandle_);
+        iocpHandle_ = nullptr;
+        WSACleanup();
+        wsaStartedByIocpLoop_ = false;
+        throw std::runtime_error("IOCPLoop: wakeup client socket failed: " + std::to_string(err));
+    }
+
+    if (connect(wakeupSocket_[0], reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) ==
+        SOCKET_ERROR) {
+        int err = WSAGetLastError();
+        closesocket(wakeupSocket_[0]);
+        wakeupSocket_[0] = INVALID_SOCKET;
+        closesocket(s);
+        CloseHandle(iocpHandle_);
+        iocpHandle_ = nullptr;
+        WSACleanup();
+        wsaStartedByIocpLoop_ = false;
+        throw std::runtime_error("IOCPLoop: wakeup connect failed: " + std::to_string(err));
+    }
 
     wakeupSocket_[1] = accept(s, nullptr, nullptr);
     closesocket(s);
+    s = INVALID_SOCKET;
 
-    // 将 wakeup socket 绑定到 IOCP
-    CreateIoCompletionPort(reinterpret_cast<HANDLE>(wakeupSocket_[0]), iocpHandle_,
-                           reinterpret_cast<ULONG_PTR>(this), 0);
+    if (wakeupSocket_[1] == INVALID_SOCKET) {
+        int err = WSAGetLastError();
+        closesocket(wakeupSocket_[0]);
+        wakeupSocket_[0] = INVALID_SOCKET;
+        CloseHandle(iocpHandle_);
+        iocpHandle_ = nullptr;
+        WSACleanup();
+        wsaStartedByIocpLoop_ = false;
+        throw std::runtime_error("IOCPLoop: wakeup accept failed: " + std::to_string(err));
+    }
+
+    HANDLE assoc = CreateIoCompletionPort(reinterpret_cast<HANDLE>(wakeupSocket_[0]), iocpHandle_,
+                                          reinterpret_cast<ULONG_PTR>(this), 0);
+    if (assoc == nullptr) {
+        int err = GetLastError();
+        closesocket(wakeupSocket_[0]);
+        wakeupSocket_[0] = INVALID_SOCKET;
+        closesocket(wakeupSocket_[1]);
+        wakeupSocket_[1] = INVALID_SOCKET;
+        CloseHandle(iocpHandle_);
+        iocpHandle_ = nullptr;
+        WSACleanup();
+        wsaStartedByIocpLoop_ = false;
+        throw std::runtime_error("IOCPLoop: CreateIoCompletionPort (wakeup) failed: " +
+                                 std::to_string(err));
+    }
 
     LOG_INFO << "IOCPLoop created " << this;
 }
 
 IOCPLoop::~IOCPLoop() {
-    if (iocpHandle_ != INVALID_HANDLE_VALUE) {
+    if (iocpHandle_) {
         CloseHandle(iocpHandle_);
+        iocpHandle_ = nullptr;
     }
-    if (wakeupEvent_ != INVALID_HANDLE_VALUE) {
-        CloseHandle(wakeupEvent_);
+    if (wakeupSocket_[0] != INVALID_SOCKET) {
+        closesocket(wakeupSocket_[0]);
+        wakeupSocket_[0] = INVALID_SOCKET;
     }
-    closesocket(wakeupSocket_[0]);
-    closesocket(wakeupSocket_[1]);
-    WSACleanup();
+    if (wakeupSocket_[1] != INVALID_SOCKET) {
+        closesocket(wakeupSocket_[1]);
+        wakeupSocket_[1] = INVALID_SOCKET;
+    }
+    if (wsaStartedByIocpLoop_) {
+        WSACleanup();
+        wsaStartedByIocpLoop_ = false;
+    }
     LOG_INFO << "IOCPLoop " << this << " destructed";
 }
 
@@ -120,7 +205,12 @@ void IOCPLoop::quit() {
 }
 
 void IOCPLoop::wakeup() {
-    SetEvent(wakeupEvent_);
+    if (!iocpHandle_) {
+        return;
+    }
+    if (!PostQueuedCompletionStatus(iocpHandle_, 0, reinterpret_cast<ULONG_PTR>(this), nullptr)) {
+        LOG_WARN << "PostQueuedCompletionStatus (wakeup) failed: " << GetLastError();
+    }
 }
 
 void IOCPLoop::handleWakeup() {
@@ -143,20 +233,24 @@ void IOCPLoop::handleCompletions() {
         timeoutMs
     );
 
-    if (success == FALSE) {
-        if (pOverlapped == nullptr) {
-            // 超时
-            return;
-        }
-        // 处理错误
-        DWORD err = GetLastError();
-        LOG_WARN << "GetQueuedCompletionStatus failed: " << err;
+    const DWORD gqcsErr = success ? ERROR_SUCCESS : GetLastError();
+
+    if (success == FALSE && pOverlapped == nullptr && gqcsErr == WAIT_TIMEOUT) {
         return;
     }
 
-    if (completionKey == reinterpret_cast<ULONG_PTR>(this)) {
-        // 这是 wakeup 事件
+    if (pOverlapped == nullptr &&
+        completionKey == reinterpret_cast<ULONG_PTR>(this)) {
         handleWakeup();
+        return;
+    }
+
+    if (success == FALSE) {
+        if (pOverlapped == nullptr) {
+            LOG_WARN << "GetQueuedCompletionStatus (no packet): " << gqcsErr;
+            return;
+        }
+        LOG_WARN << "GetQueuedCompletionStatus failed: " << gqcsErr;
         return;
     }
 
@@ -259,8 +353,7 @@ void IOCPLoop::removeChannel(Channel* channel) {
     assert(channels_[fd] == channel);
     assert(channel->isNoneEvent());
 
-    int index = channel->index();
-    assert(index == 1);
+    assert(channel->index() == 1);
 
     // 清理上下文
     auto readIt = readContexts_.find(fd);

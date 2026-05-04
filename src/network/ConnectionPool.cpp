@@ -1,6 +1,8 @@
 #include "network/ConnectionPool.h"
 #include "utils/Logging.h"
 
+#include <vector>
+
 namespace kvstore {
 
 void ConnectionPool::addConnection(const std::shared_ptr<Connection>& conn) {
@@ -38,9 +40,16 @@ size_t ConnectionPool::size() const {
 }
 
 void ConnectionPool::forEachConnection(const ConnectionCallback& callback) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& pair : connections_) {
-        callback(pair.second);
+    std::vector<std::shared_ptr<Connection>> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        snapshot.reserve(connections_.size());
+        for (auto& pair : connections_) {
+            snapshot.push_back(pair.second);
+        }
+    }
+    for (const auto& conn : snapshot) {
+        callback(conn);
     }
 }
 
