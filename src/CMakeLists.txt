@@ -38,6 +38,7 @@ set(PROTOCOL_SOURCES
 # 存储层 (P4阶段添加)
 set(STORAGE_SOURCES
     storage/MemoryStorageEngine.cpp
+    storage/SegmentedMemoryStorageEngine.cpp
 )
 
 # 持久化层 (P5阶段添加)
