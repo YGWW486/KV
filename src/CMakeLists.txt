@@ -22,10 +22,14 @@ set(NETWORK_SOURCES
     network/ConnectionPool.cpp
 )
 
-# Windows IOCP实现
+# Windows IOCP / Linux epoll
 if(WIN32)
     list(APPEND NETWORK_SOURCES
         network/iocp/IOCPLoop.cpp
+    )
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND NETWORK_SOURCES
+        network/epoll/EpollLoop.cpp
     )
 endif()
 

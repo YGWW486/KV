@@ -180,8 +180,10 @@ bool MemoryStorageEngine::lpush(const std::string& key, const std::string& value
     auto it = list_map_.find(key);
     if (it == list_map_.end()) {
         eraseKeyFromAllTypes(key, string_map_, hash_map_, list_map_, set_map_, z_score_map_, z_order_map_);
+        list_map_[key].push_front(value);
+    } else {
+        it->second.push_front(value);
     }
-    list_map_[key].push_front(value);
     return true;
 }
 
@@ -190,8 +192,10 @@ bool MemoryStorageEngine::rpush(const std::string& key, const std::string& value
     auto it = list_map_.find(key);
     if (it == list_map_.end()) {
         eraseKeyFromAllTypes(key, string_map_, hash_map_, list_map_, set_map_, z_score_map_, z_order_map_);
+        list_map_[key].push_back(value);
+    } else {
+        it->second.push_back(value);
     }
-    list_map_[key].push_back(value);
     return true;
 }
 

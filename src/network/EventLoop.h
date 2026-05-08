@@ -31,7 +31,7 @@ public:
 
     virtual void updateChannel(Channel* channel) = 0;
     virtual void removeChannel(Channel* channel) = 0;
-    virtual bool hasChannel(Channel* channel) const { return false; }
+    virtual bool hasChannel(Channel*) const { return false; }
 
     void assertInLoopThread() const;
     bool isInLoopThread() const;

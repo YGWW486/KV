@@ -17,7 +17,7 @@ public:
     using ConnectionCallback = std::function<void(const std::shared_ptr<Connection>&)>;
 
     ConnectionPool() = default;
-    ~ConnectionPool() = default;
+    ~ConnectionPool();
 
     // 添加一个连接到池中
     void addConnection(const std::shared_ptr<Connection>& conn);

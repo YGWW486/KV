@@ -1,5 +1,7 @@
 # KV-Store 测试文档
 
+质量目标、分阶段验收与指标口径见 **`QUALITY_ROADMAP.md`**。
+
 ## 1. 测试体系概览
 
 KV-Store 的测试分为三个层次：
@@ -28,7 +30,7 @@ cmake --build build --config Release
 ### 2.2 仅构建测试
 
 ```bash
-cmake --build build --config Release --target test_buffer
+cmake --build build --config Release --target test_buffer_unit
 ```
 
 ### 2.3 关闭测试构建
@@ -37,49 +39,148 @@ cmake --build build --config Release --target test_buffer
 cmake -B build -DKV_BUILD_TESTS=OFF
 ```
 
+### 2.4 Coverage 构建（生成覆盖率报告）
+
+需要 GCC 或 Clang，CMake 选项 `KV_ENABLE_COVERAGE`。
+
+```bash
+# 1. Coverage 构建
+cmake -B build-cov -DCMAKE_BUILD_TYPE=Debug -DKV_ENABLE_COVERAGE=ON
+cmake --build build-cov -j"$(nproc)"
+
+# 2. 运行测试（生成 .gcda 文件）
+cd build-cov && ctest
+
+# 3. 生成报告（gcovr，推荐）
+gcovr -r .. --html --html-details -o coverage.html
+# 或文本摘要
+gcovr -r ..
+
+# 4. 或使用 lcov + genhtml
+# lcov --capture --directory . --output-file coverage.info --no-external
+# genhtml coverage.info --output-directory coverage_html
+
+# 5. 查看
+# xdg-open coverage.html  或  open coverage.html
+```
+
+覆盖率统计范围建议仅 `src/`（核心库），见 **`QUALITY_ROADMAP.md`** §4.3。
+
 ---
 
 ## 3. 运行测试
 
-所有测试可执行文件输出到 `build/tests/` 目录。
+所有测试可执行文件输出到 `build/tests/` 目录（Windows 下为 `test_*.exe`）。
 
-### 3.1 一键运行全部测试
+### 3.1 推荐：按模块运行（CTest，日志可控）
+
+项目在配置时会注册 **CTest**，并按标签拆分。**性能四件套**（全系统集成、两段存储/网络性能、分段存储基准）日志最长，已单独归类；日常可只跑 **`fast`**，避免一次性上千行输出。
+
+**若出现 `No tests were found!!!` 或没有 `kv-test-performance` 规则：** 说明当前 **`build` 目录仍是旧配置**（拉代码或改 `tests/CMakeLists.txt` 之后未重新跑 CMake）。请在 **`build` 目录执行 **`cmake ..`**（或删 `CMakeCache.txt` 后重新 `cmake -B build`），再运行 `ctest -N` 应能看到 `kv_perf_*` 等用例。
+
+**在 `build` 目录执行：**
+
+| 目的 | 命令 |
+|------|------|
+| **日常回归（不含重型性能）** | `ctest -L fast` |
+| **仅最关键的性能/基准（四项）** | `ctest -L performance` |
+| 仅单元测试 | `ctest -L unit` |
+| 仅集成（持久化往返 + 多客户端） | `ctest -L integration` |
+| 杂项（定时器、键语义、RESP 回归） | `ctest -L misc` |
+| 全部测试（含性能） | `ctest` 或 `ctest --output-on-failure` |
+
+**Windows（Visual Studio 多配置生成器）** 一般在命令后加 **`-C Release`**，例如：
+
+```batch
+cd build
+ctest -L fast -C Release
+ctest -L performance -C Release
+```
+
+**CMake 自定义目标（需先完成配置并编译）：**
+
+```bash
+cmake --build build --target kv-test-fast
+cmake --build build --target kv-test-performance
+cmake --build build --target kv-test-unit
+cmake --build build --target kv-test-integration
+```
+
+等效于对应用 `ctest -L ...`。Linux 也可用仓库脚本（在项目根目录）：
+
+```bash
+chmod +x scripts/run_ctest.sh
+./scripts/run_ctest.sh -L fast
+./scripts/run_ctest.sh -L performance -V
+```
+
+**标签与可执行文件对应关系：**
+
+| 标签 `performance`（单独跑） | 说明 |
+|----------------------------|------|
+| `test_integration` | 全系统集成 + 大量基准日志 |
+| `test_network_performance` | Buffer / 并发 Buffer 等 |
+| `test_storage_performance` | 存储层 + 持久化性能 |
+| `test_segmented_storage` | 分段存储正确性 + 多线程对比 |
+
+| 标签 `fast` | 包含 |
+|-------------|------|
+| `unit` | `test_buffer_unit`、`test_resp_unit`、`test_resp_parser`、`test_config`、`test_command_dispatcher`、`test_inet_address` |
+| `integration` | `test_persistence_roundtrip`、`test_multi_client` |
+| `misc` | `test_eventloop_timer`、`test_storage_keys`、`test_resp_regression` |
+
+---
+
+### 3.2 一键运行全部可执行文件（输出最多）
+
+无需 CTest，直接依次运行 `build/tests` 下每个程序，**日志量最大**，适合发布前完整扫一遍。
 
 **Windows:**
 
 ```batch
 cd build\tests
-for %f in (test_*.exe) do @echo === %f === && %f && echo.
+for %f in (test_*.exe) do @echo === %f === && %f || exit /b 1
 ```
 
 **Linux/macOS:**
 
 ```bash
 cd build/tests
-for f in test_*; do echo "=== $f ==="; ./$f || exit 1; done
+for f in test_*; do echo "=== $f ==="; ./"$f" || exit 1; done
 ```
 
-返回值为 0 表示通过，非 0 表示失败。失败详情打印在 stderr。
+返回值为 0 表示通过，非 0 表示失败。
 
-### 3.2 运行单个测试
+---
+
+### 3.3 运行单个测试
 
 ```bash
 cd build/tests
-./test_buffer.exe          # Buffer 单元测试
-./test_resp.exe            # RESP 类型单元测试
-./test_resp_parser.exe     # RESP 解析器单元测试
-./test_config.exe          # Config 单元测试
-./test_command_dispatcher.exe   # 命令分发器单元测试
-./test_inet_address.exe    # InetAddress 单元测试
-./test_persistence_roundtrip.exe  # 持久化集成测试
-./test_multi_client.exe    # 多客户端并发集成测试
-./test_integration.exe     # 全系统集成测试
-./test_eventloop_timer.exe # 事件循环定时器测试
-./test_storage_keys.exe    # 键类型语义测试
-./test_resp_regression.exe # RESP 协议回归测试
-./test_storage_performance.exe  # 存储层性能测试
-./test_network_performance.exe  # 网络层性能测试
+./test_buffer_unit
+./test_resp_unit
+./test_integration
 ```
+
+Windows 下为同名 **`test_*.exe`**。以下为完整列表（与 CMake 目标一致）：
+
+| 可执行文件 | 说明 |
+|------------|------|
+| `test_buffer_unit` | Buffer |
+| `test_resp_unit` | RESP 类型 |
+| `test_resp_parser` | RESP 解析 |
+| `test_config` | 配置 |
+| `test_command_dispatcher` | 命令分发 |
+| `test_inet_address` | InetAddress |
+| `test_persistence_roundtrip` | 持久化集成 |
+| `test_multi_client` | 多客户端并发（进程内） |
+| `test_integration` | 全系统集成（**日志多**） |
+| `test_eventloop_timer` | 定时器 |
+| `test_storage_keys` | 键语义 |
+| `test_resp_regression` | RESP 回归 |
+| `test_storage_performance` | 存储性能（**日志多**） |
+| `test_network_performance` | 网络层 Buffer 性能（**日志多**） |
+| `test_segmented_storage` | 分段存储（**日志多**） |
 
 ---
 

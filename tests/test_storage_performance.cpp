@@ -130,22 +130,26 @@ void testPersistencePerformance() {
         storage.set(key, "persist_value_" + std::to_string(i));
     }
     
-    // 测试AOF保存性能
+    // 测试AOF保存性能（PersistenceManager 须 start() 后 manualSave 才生效）
     auto aof_engine = std::make_unique<AOFPersistenceEngine>("perf_test.aof");
     PersistenceManager aof_manager(std::move(aof_engine));
-    
+    aof_manager.start();
+
     benchmark.run("AOF保存", 10, [&aof_manager, &storage]() {
         return aof_manager.manualSave(&storage);
     });
-    
+    aof_manager.stop();
+
     // 测试RDB保存性能
     auto rdb_engine = std::make_unique<RDBPersistenceEngine>("perf_test.rdb");
     PersistenceManager rdb_manager(std::move(rdb_engine));
-    
+    rdb_manager.start();
+
     benchmark.run("RDB保存", 10, [&rdb_manager, &storage]() {
         return rdb_manager.manualSave(&storage);
     });
-    
+    rdb_manager.stop();
+
     benchmark.printSummary();
     
     // 清理测试文件

@@ -102,6 +102,7 @@ void testMultiCommandWorkflow() {
             storage.rpush("queue", "task3");
             storage.lpop("queue");
             storage.lrange("queue", 0, -1);
+            storage.del("queue");  // 清理，避免列表无限增长导致 LRANGE O(N) 累积
         }},
         
         {"Set操作", [&storage]() {

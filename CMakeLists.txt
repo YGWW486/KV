@@ -42,6 +42,7 @@ endif()
 option(KV_BUILD_TESTS "Build unit tests" ON)
 option(KV_BUILD_EXAMPLES "Build example programs" ON)
 option(KV_ENABLE_ASAN "Enable AddressSanitizer" OFF)
+option(KV_ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
 
 # AddressSanitizer
 if(KV_ENABLE_ASAN)
@@ -51,6 +52,16 @@ if(KV_ENABLE_ASAN)
     else()
         add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
         add_link_options(-fsanitize=address)
+    endif()
+endif()
+
+# Code Coverage
+if(KV_ENABLE_COVERAGE)
+    if(MSVC)
+        message(WARNING "Coverage with MSVC requires /profile; please use Visual Studio instrumentation")
+    else()
+        add_compile_options(--coverage)
+        add_link_options(--coverage)
     endif()
 endif()
 
@@ -64,7 +75,8 @@ if(KV_BUILD_EXAMPLES)
 endif()
 
 if(KV_BUILD_TESTS)
-    enable_testing()
+    # include(CTest) 会调用 enable_testing()，并生成与 ctest 配套的规则（仅 enable_testing 有时会导致未重新配置时看不到用例）
+    include(CTest)
     add_subdirectory(tests)
 endif()
 
@@ -81,5 +93,6 @@ message(STATUS "  Build Type:           ${CMAKE_BUILD_TYPE}")
 message(STATUS "  Build Tests:          ${KV_BUILD_TESTS}")
 message(STATUS "  Build Examples:       ${KV_BUILD_EXAMPLES}")
 message(STATUS "  AddressSanitizer:     ${KV_ENABLE_ASAN}")
+message(STATUS "  Coverage:             ${KV_ENABLE_COVERAGE}")
 message(STATUS "==========================================================")
 message(STATUS "")

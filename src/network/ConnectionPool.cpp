@@ -5,6 +5,20 @@
 
 namespace kvstore {
 
+ConnectionPool::~ConnectionPool() {
+    std::vector<std::shared_ptr<Connection>> conns;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& pair : connections_) {
+            conns.push_back(pair.second);
+        }
+        connections_.clear();
+    }
+    for (auto& conn : conns) {
+        conn->connectDestroyed();
+    }
+}
+
 void ConnectionPool::addConnection(const std::shared_ptr<Connection>& conn) {
     std::lock_guard<std::mutex> lock(mutex_);
     const std::string& name = conn->name();

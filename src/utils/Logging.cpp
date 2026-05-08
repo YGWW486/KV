@@ -1,4 +1,5 @@
 #include "utils/Logging.h"
+#include <cstdlib>
 #include <iostream>
 #include <cstdio>
 
@@ -38,6 +39,9 @@ Logger::~Logger() {
     if (level_ >= LoggerImpl::instance().getLogLevel()) {
         stream_ << "\n";
         LoggerImpl::instance().log(stream_.str());
+    }
+    if (level_ == FATAL) {
+        std::abort();
     }
 }
 

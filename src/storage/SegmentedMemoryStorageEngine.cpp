@@ -1,6 +1,7 @@
 #include "storage/SegmentedMemoryStorageEngine.h"
 #include <algorithm>
 #include <cmath>
+#include <mutex>
 
 namespace kvstore {
 

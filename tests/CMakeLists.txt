@@ -122,3 +122,58 @@ set_target_properties(
     PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
+
+# ==============================================================================
+# CTest：按模块打标签，避免一次性跑完全部冗长性能用例
+#
+# 用法（在 build 目录）：
+#   ctest -L fast              # 日常：除「性能四件套」外全部
+#   ctest -L performance       # 仅四项重型性能/基准（日志最多）
+#   ctest -L unit              # 仅单元
+#   cmake --build . --target kv-test-performance
+# ==============================================================================
+set(_kv_test_wd ${CMAKE_BINARY_DIR}/tests)
+
+# ---- fast：单元 + 集成 + 杂项（输出相对较少）----
+add_test(NAME kv_unit_buffer           COMMAND test_buffer_unit           WORKING_DIRECTORY ${_kv_test_wd})
+add_test(NAME kv_unit_resp             COMMAND test_resp_unit               WORKING_DIRECTORY ${_kv_test_wd})
+add_test(NAME kv_unit_resp_parser      COMMAND test_resp_parser            WORKING_DIRECTORY ${_kv_test_wd})
+add_test(NAME kv_unit_config           COMMAND test_config                 WORKING_DIRECTORY ${_kv_test_wd})
+add_test(NAME kv_unit_command_dispatch COMMAND test_command_dispatcher      WORKING_DIRECTORY ${_kv_test_wd})
+add_test(NAME kv_unit_inet_address     COMMAND test_inet_address           WORKING_DIRECTORY ${_kv_test_wd})
+set_tests_properties(
+    kv_unit_buffer kv_unit_resp kv_unit_resp_parser
+    kv_unit_config kv_unit_command_dispatch kv_unit_inet_address
+    PROPERTIES LABELS "unit;fast")
+
+add_test(NAME kv_integ_persistence COMMAND test_persistence_roundtrip WORKING_DIRECTORY ${_kv_test_wd})
+add_test(NAME kv_integ_multiclient COMMAND test_multi_client          WORKING_DIRECTORY ${_kv_test_wd})
+set_tests_properties(kv_integ_persistence kv_integ_multiclient PROPERTIES LABELS "integration;fast")
+
+add_test(NAME kv_misc_eventloop_timer COMMAND test_eventloop_timer WORKING_DIRECTORY ${_kv_test_wd})
+add_test(NAME kv_misc_storage_keys    COMMAND test_storage_keys    WORKING_DIRECTORY ${_kv_test_wd})
+add_test(NAME kv_misc_resp_regression COMMAND test_resp_regression WORKING_DIRECTORY ${_kv_test_wd})
+set_tests_properties(kv_misc_eventloop_timer kv_misc_storage_keys kv_misc_resp_regression PROPERTIES LABELS "misc;fast")
+
+# ---- performance：日志多、耗时长，单独跑 ----
+add_test(NAME kv_perf_integration          COMMAND test_integration          WORKING_DIRECTORY ${_kv_test_wd})
+add_test(NAME kv_perf_network              COMMAND test_network_performance  WORKING_DIRECTORY ${_kv_test_wd})
+add_test(NAME kv_perf_storage              COMMAND test_storage_performance  WORKING_DIRECTORY ${_kv_test_wd})
+add_test(NAME kv_perf_segmented_storage    COMMAND test_segmented_storage   WORKING_DIRECTORY ${_kv_test_wd})
+set_tests_properties(
+    kv_perf_integration kv_perf_network kv_perf_storage kv_perf_segmented_storage
+    PROPERTIES LABELS "performance")
+
+# 便捷目标（在 build 目录执行 cmake 后即可用）
+add_custom_target(kv-test-fast
+    COMMAND ${CMAKE_CTEST_COMMAND} --test-dir "${CMAKE_BINARY_DIR}" -L fast
+    COMMENT "Run fast tests (unit + integration + misc), excluding heavy performance suite")
+add_custom_target(kv-test-performance
+    COMMAND ${CMAKE_CTEST_COMMAND} --test-dir "${CMAKE_BINARY_DIR}" -L performance
+    COMMENT "Run heavy performance / benchmark tests only")
+add_custom_target(kv-test-unit
+    COMMAND ${CMAKE_CTEST_COMMAND} --test-dir "${CMAKE_BINARY_DIR}" -L unit
+    COMMENT "Run unit tests only")
+add_custom_target(kv-test-integration
+    COMMAND ${CMAKE_CTEST_COMMAND} --test-dir "${CMAKE_BINARY_DIR}" -L integration
+    COMMENT "Run integration tests only (persistence roundtrip + multi_client)")

@@ -1,25 +1,53 @@
 #include "network/Connection.h"
 #include "utils/Logging.h"
+
+#ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#else
+#include <errno.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#endif
 
 namespace kvstore {
 
 Connection::Connection(EventLoop* loop, const std::string& name, socket_t sockfd,
                        const InetAddress& localAddr, const InetAddress& peerAddr)
-    : loop_(loop), name_(name), state_(kConnecting), sockfd_(sockfd),
-      localAddr_(localAddr), peerAddr_(peerAddr) {
-    channel_.reset(new Channel(loop_, (int)sockfd_));
+    : loop_(loop)
+    , name_(name)
+    , state_(kConnecting)
+    , sockfd_(sockfd)
+    , localAddr_(localAddr)
+    , peerAddr_(peerAddr) {
+    channel_.reset(new Channel(loop_, static_cast<int>(sockfd_)));
     channel_->setReadCallback(std::bind(&Connection::handleRead, this, std::placeholders::_1));
     channel_->setWriteCallback(std::bind(&Connection::handleWrite, this));
     channel_->setCloseCallback(std::bind(&Connection::handleClose, this));
     channel_->setErrorCallback(std::bind(&Connection::handleError, this));
+#ifdef _WIN32
     u_long mode = 1;
     ioctlsocket(sockfd_, FIONBIO, &mode);
+#else
+    int flags = ::fcntl(sockfd_, F_GETFL, 0);
+    if (flags >= 0) {
+        ::fcntl(sockfd_, F_SETFL, flags | O_NONBLOCK);
+    }
+    int nodelay = 1;
+    ::setsockopt(sockfd_, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+#endif
 }
 
 Connection::~Connection() {
+#ifdef _WIN32
     closesocket(sockfd_);
+#else
+    ::close(sockfd_);
+#endif
 }
 
 void Connection::connectEstablished() {
@@ -89,9 +117,13 @@ void Connection::sendInLoop(const void* message, size_t len) {
     const char* data = static_cast<const char*>(message);
 
     if (!channel_->isWriting() && outputBuffer_.readableBytes() == 0) {
-        int n = ::send(sockfd_, data, (int)remaining, 0);
+#ifdef _WIN32
+        int n = ::send(sockfd_, data, static_cast<int>(remaining), 0);
+#else
+        ssize_t n = ::send(sockfd_, data, remaining, MSG_NOSIGNAL);
+#endif
         if (n >= 0) {
-            remaining -= n;
+            remaining -= static_cast<size_t>(n);
             data += n;
             if (remaining == 0 && writeCompleteCallback_) {
                 loop_->queueInLoop(std::bind(writeCompleteCallback_, shared_from_this()));
@@ -122,7 +154,11 @@ void Connection::shutdown() {
 void Connection::shutdownInLoop() {
     loop_->assertInLoopThread();
     if (!channel_->isWriting()) {
+#ifdef _WIN32
         ::shutdown(sockfd_, SD_SEND);
+#else
+        ::shutdown(sockfd_, SHUT_WR);
+#endif
     }
 }
 
@@ -137,11 +173,16 @@ void Connection::handleRead(Timestamp receiveTime) {
     } else if (n == 0) {
         handleClose();
     } else {
-        int err = WSAGetLastError();
-        if (err == WSAEWOULDBLOCK) {
-            return; // 非阻塞 socket 暂无数据，等待下一轮 IOCP 通知
+#ifdef _WIN32
+        if (savedErrno == WSAEWOULDBLOCK) {
+            return;
         }
-        LOG_ERROR << "Read error: " << err;
+#else
+        if (savedErrno == EAGAIN || savedErrno == EWOULDBLOCK) {
+            return;
+        }
+#endif
+        LOG_ERROR << "Read error: " << savedErrno;
         handleError();
     }
 }
@@ -149,9 +190,13 @@ void Connection::handleRead(Timestamp receiveTime) {
 void Connection::handleWrite() {
     loop_->assertInLoopThread();
     if (channel_->isWriting()) {
-        int n = ::send(sockfd_, outputBuffer_.peek(), (int)outputBuffer_.readableBytes(), 0);
+#ifdef _WIN32
+        int n = ::send(sockfd_, outputBuffer_.peek(), static_cast<int>(outputBuffer_.readableBytes()), 0);
+#else
+        ssize_t n = ::send(sockfd_, outputBuffer_.peek(), outputBuffer_.readableBytes(), MSG_NOSIGNAL);
+#endif
         if (n > 0) {
-            outputBuffer_.retrieve(n);
+            outputBuffer_.retrieve(static_cast<size_t>(n));
             if (outputBuffer_.readableBytes() == 0) {
                 channel_->disableWriting();
                 if (writeCompleteCallback_) {
@@ -175,7 +220,16 @@ void Connection::handleClose() {
 }
 
 void Connection::handleError() {
+#ifdef _WIN32
     int err = WSAGetLastError();
+#else
+    int soerr = 0;
+    socklen_t optlen = sizeof(soerr);
+    if (::getsockopt(sockfd_, SOL_SOCKET, SO_ERROR, &soerr, &optlen) < 0) {
+        soerr = errno;
+    }
+    int err = soerr;
+#endif
     LOG_ERROR << "Connection::handleError [" << name_ << "] - SO_ERROR = " << err;
 }
 

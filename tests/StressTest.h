@@ -91,6 +91,7 @@ public:
     
     // 模拟网络请求
     bool sendRequest(const std::string& request) {
+        (void)request;
         // 这里应该实现实际的网络连接和请求发送
         // 简化实现：模拟网络延迟
         std::this_thread::sleep_for(std::chrono::milliseconds(1));

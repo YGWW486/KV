@@ -10,7 +10,8 @@ target_link_libraries(echo_server
         kvstore
 )
 
-# Echo client
+# Echo client (Windows only)
+if(WIN32)
 add_executable(echo_client
     echo_client.cpp
 )
@@ -19,6 +20,7 @@ target_link_libraries(echo_client
     PRIVATE
         kvstore
 )
+endif()
 
 # RESP测试程序
 add_executable(test_resp

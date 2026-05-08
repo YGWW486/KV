@@ -19,6 +19,21 @@ using ssize_t = SSIZE_T;
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+// glibc <endian.h> often defines htobe16/htobe32/... as macros. Those would break our
+// inline helpers below by renaming them (e.g. htobe16 -> __bswap_16) and then
+// htons(...) becomes an ambiguous __bswap_16 overload in TUs that use both.
+#undef htobe16
+#undef htole16
+#undef betoh16
+#undef letoh16
+#undef htobe32
+#undef htole32
+#undef betoh32
+#undef letoh32
+#undef htobe64
+#undef htole64
+#undef betoh64
+#undef letoh64
 #endif
 
 namespace kvstore {

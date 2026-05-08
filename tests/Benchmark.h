@@ -8,6 +8,8 @@
 #include <map>
 #include <algorithm>
 #include <iostream>
+#include <fstream>
+#include <sys/resource.h>
 #include "../src/utils/Logging.h"
 
 #ifdef _WIN32
@@ -145,6 +147,10 @@ public:
         }
         return 0;
 #else
+        struct rusage usage;
+        if (getrusage(RUSAGE_SELF, &usage) == 0) {
+            return static_cast<size_t>(usage.ru_maxrss);
+        }
         return 0;
 #endif
     }
