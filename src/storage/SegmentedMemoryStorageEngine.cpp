@@ -1,9 +1,23 @@
 #include "storage/SegmentedMemoryStorageEngine.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <mutex>
 
 namespace kvstore {
+
+static int64_t currentTimeMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+static std::atomic<uint64_t> g_lru_clock{0};
+
+// Memory estimation: rough key+value overhead
+static size_t estimateEntryBytes(const std::string& key, const std::string& value) {
+    return key.size() + value.size() + 64; // 64 overhead per entry
+}
 
 static size_t roundUpPowerOf2(size_t n) {
     size_t p = 1;
@@ -49,21 +63,47 @@ bool SegmentedMemoryStorageEngine::matchPattern(const std::string& pattern, cons
 
 bool SegmentedMemoryStorageEngine::set(const std::string& key, const std::string& value) {
     SEG; LOCK_EX;
+    // Memory tracking: remove old size, add new
+    auto old = seg.string_map.find(key);
+    if (old != seg.string_map.end()) {
+        seg.memory_usage_.store(
+            seg.memory_usage_.load() - estimateEntryBytes(key, old->second),
+            std::memory_order_relaxed);
+    }
     seg.eraseKeyByType(key);
     seg.string_map[key] = value;
     seg.key_types[key] = KeyType::String;
+    seg.expires_.erase(key);
+    seg.lru_clock_[key] = g_lru_clock.load(std::memory_order_relaxed);
+    seg.memory_usage_.store(
+        seg.memory_usage_.load() + estimateEntryBytes(key, value),
+        std::memory_order_relaxed);
     return true;
 }
 
 std::optional<std::string> SegmentedMemoryStorageEngine::get(const std::string& key) {
     SEG; LOCK_SH;
+    // Check expiry
+    auto expIt = seg.expires_.find(key);
+    if (expIt != seg.expires_.end() && currentTimeMs() > expIt->second) {
+        return std::nullopt;
+    }
     auto it = seg.string_map.find(key);
     if (it == seg.string_map.end()) return std::nullopt;
+    seg.lru_clock_[key] = g_lru_clock.load(std::memory_order_relaxed);
     return it->second;
 }
 
 bool SegmentedMemoryStorageEngine::del(const std::string& key) {
     SEG; LOCK_EX;
+    auto old = seg.string_map.find(key);
+    if (old != seg.string_map.end()) {
+        seg.memory_usage_.store(
+            seg.memory_usage_.load() - estimateEntryBytes(key, old->second),
+            std::memory_order_relaxed);
+    }
+    seg.expires_.erase(key);
+    seg.lru_clock_.erase(key);
     return seg.eraseKeyByType(key);
 }
 
@@ -415,8 +455,148 @@ bool SegmentedMemoryStorageEngine::flushall() {
         s.z_score_map.clear();
         s.z_order_map.clear();
         s.key_types.clear();
+        s.expires_.clear();
+        s.lru_clock_.clear();
+        s.memory_usage_.store(0, std::memory_order_relaxed);
     }
     return true;
+}
+
+// ---- TTL ops ----
+
+bool SegmentedMemoryStorageEngine::expire(const std::string& key, int64_t ttlMs) {
+    SEG; LOCK_EX;
+    if (!seg.keyExists(key)) return false;
+    seg.expires_[key] = currentTimeMs() + ttlMs;
+    return true;
+}
+
+int64_t SegmentedMemoryStorageEngine::ttl(const std::string& key) {
+    SEG; LOCK_SH;
+    if (!seg.keyExists(key)) return -2;
+    auto it = seg.expires_.find(key);
+    if (it == seg.expires_.end()) return -1;
+    int64_t remain = it->second - currentTimeMs();
+    return remain > 0 ? remain : -2;
+}
+
+bool SegmentedMemoryStorageEngine::persist(const std::string& key) {
+    SEG; LOCK_EX;
+    return seg.expires_.erase(key) > 0;
+}
+
+size_t SegmentedMemoryStorageEngine::evictExpired(size_t maxSamples) {
+    int64_t now = currentTimeMs();
+    size_t deleted = 0;
+    for (size_t segIdx = 0; segIdx < segment_count_ && deleted < maxSamples; ++segIdx) {
+        auto& seg = *segments_[segIdx];
+        std::unique_lock lock(seg.mutex);
+        size_t checked = 0;
+        auto it = seg.expires_.begin();
+        while (it != seg.expires_.end() && checked < 20) {
+            if (now > it->second) {
+                std::string key = it->first;
+                seg.expires_.erase(it++);
+                seg.lru_clock_.erase(key);
+                seg.eraseKeyByType(key); // memory_usage_ not tracked for expired keys
+                ++deleted;
+            } else {
+                ++it;
+            }
+            ++checked;
+        }
+    }
+    return deleted;
+}
+
+// ---- Memory / LRU ops ----
+
+size_t SegmentedMemoryStorageEngine::getMemoryUsage() const {
+    size_t total = 0;
+    for (size_t i = 0; i < segment_count_; ++i)
+        total += segments_[i]->memory_usage_.load(std::memory_order_relaxed);
+    return total;
+}
+
+size_t SegmentedMemoryStorageEngine::getKeyCount() const {
+    size_t total = 0;
+    for (size_t i = 0; i < segment_count_; ++i) {
+        std::shared_lock lock(segments_[i]->mutex);
+        total += segments_[i]->key_types.size();
+    }
+    return total;
+}
+
+std::string SegmentedMemoryStorageEngine::getKeyspaceInfo() const {
+    size_t keys = 0, expires = 0;
+    for (size_t i = 0; i < segment_count_; ++i) {
+        std::shared_lock lock(segments_[i]->mutex);
+        keys += segments_[i]->key_types.size();
+        expires += segments_[i]->expires_.size();
+    }
+    return "db0:keys=" + std::to_string(keys) + ",expires=" + std::to_string(expires);
+}
+
+void SegmentedMemoryStorageEngine::touchKey(const std::string& key) {
+    size_t idx = segmentIndex(key);
+    auto& seg = *segments_[idx];
+    std::unique_lock lock(seg.mutex, std::try_to_lock);
+    if (!lock.owns_lock()) return;
+    seg.lru_clock_[key] = g_lru_clock.load(std::memory_order_relaxed);
+}
+
+void SegmentedMemoryStorageEngine::tickLRUClock() {
+    g_lru_clock.fetch_add(1, std::memory_order_relaxed);
+}
+
+size_t SegmentedMemoryStorageEngine::evictLRU(size_t targetBytes) {
+    size_t freed = 0;
+    constexpr size_t kMaxSamples = 5;
+    int maxAttempts = 100; // safety limit
+
+    while (freed < targetBytes && maxAttempts-- > 0) {
+        size_t segIdx = static_cast<size_t>(std::chrono::steady_clock::now().time_since_epoch().count())
+                        % segment_count_;
+        auto& seg = *segments_[segIdx];
+        std::unique_lock lock(seg.mutex);
+
+        uint64_t oldest = UINT64_MAX;
+        std::string victim;
+        KeyType victimType = KeyType::None;
+
+        size_t sampled = 0;
+        for (const auto& [key, type] : seg.key_types) {
+            if (sampled >= kMaxSamples) break;
+            ++sampled;
+            auto lruIt = seg.lru_clock_.find(key);
+            uint64_t clock = (lruIt != seg.lru_clock_.end()) ? lruIt->second : 0;
+            if (clock < oldest) {
+                oldest = clock;
+                victim = key;
+                victimType = type;
+            }
+        }
+
+        if (victim.empty()) break;
+
+        // Estimate freed bytes
+        size_t approx = victim.size() + 64;
+        switch (victimType) {
+        case KeyType::String: {
+            auto it = seg.string_map.find(victim);
+            if (it != seg.string_map.end()) approx += it->second.size();
+            break;
+        }
+        default: approx += 16; break;
+        }
+        freed += approx;
+        seg.memory_usage_.store(seg.memory_usage_.load() > approx
+            ? seg.memory_usage_.load() - approx : 0, std::memory_order_relaxed);
+        seg.eraseKeyByType(victim);
+        seg.expires_.erase(victim);
+        seg.lru_clock_.erase(victim);
+    }
+    return freed;
 }
 
 } // namespace kvstore

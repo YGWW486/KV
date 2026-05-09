@@ -3,6 +3,7 @@
 
 #include "kvstore/Types.h"
 #include <map>
+#include <cstdint>
 
 namespace kvstore {
 
@@ -44,6 +45,26 @@ inline string Config::get<string>(const string& key, const string& defaultValue)
     auto it = data_.find(key);
     if (it != data_.end()) {
         return it->second;
+    }
+    return defaultValue;
+}
+
+template<>
+inline int64_t Config::get<int64_t>(const string& key, const int64_t& defaultValue) const {
+    auto it = data_.find(key);
+    if (it != data_.end()) {
+        try { return std::stoll(it->second); }
+        catch (...) { return defaultValue; }
+    }
+    return defaultValue;
+}
+
+template<>
+inline size_t Config::get<size_t>(const string& key, const size_t& defaultValue) const {
+    auto it = data_.find(key);
+    if (it != data_.end()) {
+        try { return static_cast<size_t>(std::stoull(it->second)); }
+        catch (...) { return defaultValue; }
     }
     return defaultValue;
 }

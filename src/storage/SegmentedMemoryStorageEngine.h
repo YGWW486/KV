@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include <map>
 #include <shared_mutex>
+#include <atomic>
 #include <vector>
 #include <string>
 
@@ -23,6 +24,9 @@ struct alignas(64) StorageSegment {
     std::unordered_map<std::string, std::map<double, std::unordered_set<std::string>>> z_order_map;
 
     std::unordered_map<std::string, KeyType> key_types;
+    std::unordered_map<std::string, int64_t> expires_;
+    std::atomic<size_t> memory_usage_{0};
+    std::unordered_map<std::string, uint64_t> lru_clock_;
     mutable std::shared_mutex mutex;
 
     bool eraseKeyByType(const std::string& key) {
@@ -100,6 +104,20 @@ public:
     std::vector<std::string> keys(const std::string& pattern) override;
     KeyType getType(const std::string& key) override;
     bool flushall() override;
+
+    // TTL
+    bool expire(const std::string& key, int64_t ttlMs) override;
+    int64_t ttl(const std::string& key) override;
+    bool persist(const std::string& key) override;
+    size_t evictExpired(size_t maxSamples) override;
+
+    // Memory / LRU
+    size_t getMemoryUsage() const override;
+    size_t getKeyCount() const override;
+    std::string getKeyspaceInfo() const override;
+    void touchKey(const std::string& key) override;
+    void tickLRUClock() override;
+    size_t evictLRU(size_t targetBytes) override;
 
     size_t segmentCount() const { return segment_count_; }
 

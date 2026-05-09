@@ -19,11 +19,16 @@ ConnectionPool::~ConnectionPool() {
     }
 }
 
-void ConnectionPool::addConnection(const std::shared_ptr<Connection>& conn) {
+bool ConnectionPool::addConnection(const std::shared_ptr<Connection>& conn) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (maxConnections_ > 0 && connections_.size() >= maxConnections_) {
+        LOG_WARN << "Max connections (" << maxConnections_ << ") reached, rejecting " << conn->name();
+        return false;
+    }
     const std::string& name = conn->name();
     connections_[name] = conn;
     LOG_INFO << "Connection added: " << name << ", total: " << connections_.size();
+    return true;
 }
 
 void ConnectionPool::removeConnection(const std::shared_ptr<Connection>& conn) {

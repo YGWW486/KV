@@ -19,8 +19,10 @@ public:
     ConnectionPool() = default;
     ~ConnectionPool();
 
-    // 添加一个连接到池中
-    void addConnection(const std::shared_ptr<Connection>& conn);
+    // 添加一个连接到池中，返回 false 表示达到连接上限
+    bool addConnection(const std::shared_ptr<Connection>& conn);
+    void setMaxConnections(size_t n) { maxConnections_ = n; }
+    size_t maxConnections() const { return maxConnections_; }
 
     // 从池中移除一个连接
     void removeConnection(const std::shared_ptr<Connection>& conn);
@@ -41,6 +43,7 @@ public:
 private:
     mutable std::mutex mutex_;
     std::map<std::string, std::shared_ptr<Connection>> connections_;
+    size_t maxConnections_ = 0; // 0 = unlimited
 };
 
 } // namespace kvstore

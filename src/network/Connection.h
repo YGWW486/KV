@@ -36,6 +36,8 @@ public:
     const InetAddress& localAddress() const { return localAddr_; }
     const InetAddress& peerAddress() const { return peerAddr_; }
     bool connected() const { return state_ == kConnected; }
+    void setAuthenticated(bool auth) { authenticated_ = auth; }
+    bool isAuthenticated() const { return authenticated_; }
 
     void connectEstablished();
     void connectDestroyed();
@@ -68,6 +70,7 @@ private:
     WriteCompleteCallback writeCompleteCallback_;
     Buffer inputBuffer_;
     Buffer outputBuffer_;
+    bool authenticated_ = false;
 };
 
 } // namespace kvstore

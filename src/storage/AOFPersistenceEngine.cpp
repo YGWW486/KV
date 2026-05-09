@@ -22,9 +22,11 @@ namespace kvstore {
 AOFPersistenceEngine::AOFPersistenceEngine(const std::string& aof_path)
     : aof_path_(aof_path), policy_(AOFPolicy::EVERYSEC) {
     LOG_INFO << "AOF持久化引擎初始化，文件路径: " << aof_path_;
+    startBgThread();
 }
 
 AOFPersistenceEngine::~AOFPersistenceEngine() {
+    stopBgThread();
     closeAOFFile();
     LOG_INFO << "AOF持久化引擎销毁";
 }
@@ -218,7 +220,13 @@ void AOFPersistenceEngine::recordWrite(const std::string& command) {
 }
 
 void AOFPersistenceEngine::setPolicy(AOFPolicy policy) {
+    if (policy_ == AOFPolicy::EVERYSEC && policy != AOFPolicy::EVERYSEC) {
+        stopBgThread();
+    }
     policy_ = policy;
+    if (policy == AOFPolicy::EVERYSEC) {
+        startBgThread();
+    }
     LOG_INFO << "设置AOF同步策略: " << static_cast<int>(policy);
 }
 
@@ -328,6 +336,7 @@ bool AOFPersistenceEngine::rewriteAOF(const StorageEngine* storage) {
 }
 
 void AOFPersistenceEngine::syncAOF() {
+    std::lock_guard<std::mutex> lock(fd_mutex_);
     if (aof_fd_ >= 0) {
 #ifdef _WIN32
         _commit(aof_fd_);
@@ -335,6 +344,99 @@ void AOFPersistenceEngine::syncAOF() {
         fdatasync(aof_fd_);
 #endif
     }
+}
+
+void AOFPersistenceEngine::startBgThread() {
+    if (thread_running_) return;
+    thread_running_ = true;
+    aof_thread_ = std::thread([this]() {
+        LOG_INFO << "AOF background sync thread started (EVERYSEC)";
+        while (thread_running_) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            if (!thread_running_) break;
+            syncAOF();
+        }
+        LOG_INFO << "AOF background sync thread stopped";
+    });
+}
+
+void AOFPersistenceEngine::stopBgThread() {
+    if (!thread_running_) return;
+    thread_running_ = false;
+    if (aof_thread_.joinable()) {
+        aof_thread_.join();
+    }
+}
+
+void AOFPersistenceEngine::rewriteAOFAsync(const StorageEngine* storage) {
+    if (rewriting_.exchange(true)) {
+        LOG_WARN << "AOF rewrite already in progress, skipping";
+        return;
+    }
+    LOG_INFO << "Starting async AOF rewrite...";
+    rewrite_thread_ = std::thread([this, storage]() {
+        std::string temp_path = aof_path_ + ".tmp";
+        // Do the heavy work: scan storage, write compacted commands
+        {
+            std::ofstream temp_file(temp_path);
+            if (!temp_file.is_open()) {
+                LOG_ERROR << "Async rewrite: cannot create temp file " << temp_path;
+                rewriting_ = false;
+                return;
+            }
+            auto* ms = const_cast<StorageEngine*>(storage);
+            auto keys = ms->keys("*");
+            for (const auto& key : keys) {
+                KeyType type = ms->getType(key);
+                switch (type) {
+                case KeyType::String: {
+                    if (auto value = ms->get(key)) {
+                        temp_file << formatAOFLine({"SET", key, *value}) << "\n";
+                    }
+                    break;
+                }
+                case KeyType::Hash: {
+                    for (const auto& [field, value] : ms->hgetall(key)) {
+                        temp_file << formatAOFLine({"HSET", key, field, value}) << "\n";
+                    }
+                    break;
+                }
+                case KeyType::List: {
+                    for (const auto& elem : ms->lrange(key, 0, -1)) {
+                        temp_file << formatAOFLine({"RPUSH", key, elem}) << "\n";
+                    }
+                    break;
+                }
+                case KeyType::Set: {
+                    for (const auto& member : ms->smembers(key)) {
+                        temp_file << formatAOFLine({"SADD", key, member}) << "\n";
+                    }
+                    break;
+                }
+                case KeyType::ZSet: {
+                    for (const auto& [score, member] : ms->zrange(key, 0, -1)) {
+                        temp_file << formatAOFLine({"ZADD", key, std::to_string(score), member}) << "\n";
+                    }
+                    break;
+                }
+                case KeyType::None: break;
+                }
+            }
+        } // temp_file closed
+        // Atomic swap under fd_mutex_
+        {
+            std::lock_guard<std::mutex> lock(fd_mutex_);
+            closeAOFFile();
+            std::remove(aof_path_.c_str());
+            if (std::rename(temp_path.c_str(), aof_path_.c_str()) != 0) {
+                LOG_ERROR << "Async rewrite: rename failed";
+            }
+            openAOFFile();
+        }
+        rewriting_ = false;
+        LOG_INFO << "Async AOF rewrite completed";
+    });
+    rewrite_thread_.detach();
 }
 
 } // namespace kvstore

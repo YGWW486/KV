@@ -7,6 +7,9 @@
 #include <vector>
 #include <sstream>
 #include <algorithm>
+#include <thread>
+#include <atomic>
+#include <mutex>
 #include "StorageEngine.h"
 
 namespace kvstore {
@@ -52,6 +55,9 @@ public:
     std::string getStatus() const override;
 
     void syncAOF();
+    void startBgThread();
+    void stopBgThread();
+    void rewriteAOFAsync(const StorageEngine* storage);
 
     static std::string formatAOFLine(const std::vector<std::string>& argv);
 
@@ -63,9 +69,15 @@ private:
     AOFPolicy policy_;
     FILE* aof_fp_ = nullptr;
     int aof_fd_ = -1;
+    std::mutex fd_mutex_;
+
+    std::thread aof_thread_;
+    std::atomic<bool> thread_running_{false};
 
     // 重写AOF文件（压缩）
     bool rewriteAOF(const StorageEngine* storage);
+    std::atomic<bool> rewriting_{false};
+    std::thread rewrite_thread_;
 };
 
 // RDB持久化引擎

@@ -3,6 +3,7 @@
 #include "storage/PersistenceEngine.h"
 
 #include <cctype>
+#include <chrono>
 #include <sstream>
 #include <unordered_map>
 #include <functional>
@@ -19,7 +20,7 @@ void CommandDispatcher::recordAOF(const std::string& cmd, const std::vector<std:
         cmd == "LRANGE" || cmd == "LLEN" || cmd == "HGET" || cmd == "HGETALL" ||
         cmd == "HKEYS" || cmd == "HLEN" || cmd == "SMEMBERS" || cmd == "SISMEMBER" ||
         cmd == "SCARD" || cmd == "ZRANGE" || cmd == "ZSCORE" || cmd == "ZRANK" ||
-        cmd == "ZCARD") return; // read-only commands
+        cmd == "ZCARD" || cmd == "AUTH" || cmd == "TTL" || cmd == "INFO") return;
     aof_->recordWrite(AOFPersistenceEngine::formatAOFLine(argv));
 }
 
@@ -426,8 +427,103 @@ std::shared_ptr<RESPObject> CommandDispatcher::handleZcard(const std::vector<std
     return std::make_shared<RESPInteger>(static_cast<int64_t>(storage_->zcard(argv[1])));
 }
 
+std::shared_ptr<RESPObject> CommandDispatcher::handleAuth(const std::vector<std::string>& /*argv*/) {
+    return std::make_shared<RESPError>("ERR AUTH handled by server layer");
+}
+
+std::shared_ptr<RESPObject> CommandDispatcher::handleInfo(const std::vector<std::string>& /*argv*/) {
+    if (infoCallback_) {
+        return std::make_shared<RESPBulkString>(infoCallback_());
+    }
+    return std::make_shared<RESPBulkString>("");
+}
+
+std::shared_ptr<RESPObject> CommandDispatcher::handleExpire(const std::vector<std::string>& argv) {
+    if (argv.size() < 3) {
+        return std::make_shared<RESPError>("ERR wrong number of arguments for 'EXPIRE' command");
+    }
+    try {
+        int64_t seconds = std::stoll(argv[2]);
+        if (seconds < 0) seconds = 0;
+        bool ok = storage_->expire(argv[1], seconds * 1000);
+        recordAOF("EXPIRE", argv);
+        return std::make_shared<RESPInteger>(ok ? 1 : 0);
+    } catch (...) {
+        return std::make_shared<RESPError>("ERR value is not an integer or out of range");
+    }
+}
+
+std::shared_ptr<RESPObject> CommandDispatcher::handleTTL(const std::vector<std::string>& argv) {
+    if (argv.size() < 2) {
+        return std::make_shared<RESPError>("ERR wrong number of arguments for 'TTL' command");
+    }
+    int64_t ms = storage_->ttl(argv[1]);
+    if (ms <= 0) return std::make_shared<RESPInteger>(ms); // -1 or -2
+    return std::make_shared<RESPInteger>((ms + 999) / 1000); // seconds
+}
+
+std::shared_ptr<RESPObject> CommandDispatcher::handlePersist(const std::vector<std::string>& argv) {
+    if (argv.size() < 2) {
+        return std::make_shared<RESPError>("ERR wrong number of arguments for 'PERSIST' command");
+    }
+    bool ok = storage_->persist(argv[1]);
+    recordAOF("PERSIST", argv);
+    return std::make_shared<RESPInteger>(ok ? 1 : 0);
+}
+
+std::shared_ptr<RESPObject> CommandDispatcher::handleSlowlog(const std::vector<std::string>& argv) {
+    if (argv.size() < 2) {
+        return std::make_shared<RESPError>("ERR wrong number of arguments for 'SLOWLOG' command");
+    }
+    std::string sub = argv[1];
+    // Convert to uppercase for comparison
+    for (auto& c : sub) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+
+    if (sub == "LEN") {
+        return std::make_shared<RESPInteger>(static_cast<int64_t>(slowlog_.size()));
+    }
+    if (sub == "RESET") {
+        resetSlowlog();
+        return std::make_shared<RESPSimpleString>("OK");
+    }
+    if (sub == "GET") {
+        int64_t count = 10;
+        if (argv.size() >= 3) {
+            try { count = std::stoll(argv[2]); } catch (...) {}
+        }
+        if (count < 0) count = 0;
+        size_t n = static_cast<size_t>(count);
+        if (n > slowlog_.size()) n = slowlog_.size();
+
+        std::vector<std::shared_ptr<RESPObject>> arr;
+        // Return from oldest to newest (like Redis)
+        for (size_t i = slowlog_.size() - n; i < slowlog_.size(); ++i) {
+            const auto& e = slowlog_[i];
+            std::vector<std::shared_ptr<RESPObject>> entry;
+            entry.push_back(std::make_shared<RESPInteger>(e.id));
+            entry.push_back(std::make_shared<RESPInteger>(e.timestamp_us / 1000000)); // unix sec
+            entry.push_back(std::make_shared<RESPInteger>(e.duration_us));
+            entry.push_back(std::make_shared<RESPBulkString>(e.command));
+            arr.push_back(std::make_shared<RESPArray>(std::move(entry)));
+        }
+        return std::make_shared<RESPArray>(std::move(arr));
+    }
+    return std::make_shared<RESPError>("ERR Unknown SLOWLOG subcommand '" + sub + "'");
+}
+
+// Static helpers for AUTH gating
+std::string CommandDispatcher::extractCommandStatic(const std::shared_ptr<RESPObject>& request) {
+    CommandDispatcher dummy(nullptr);
+    return dummy.extractCommand(request);
+}
+
+std::vector<std::string> CommandDispatcher::flattenArgsStatic(const std::shared_ptr<RESPObject>& request) {
+    return CommandDispatcher(nullptr).flattenArgs(request);
+}
+
 const std::unordered_map<std::string, CommandDispatcher::CmdHandler> CommandDispatcher::kDispatchTable = {
     {"PING",   &CommandDispatcher::handlePing},
+    {"AUTH",   &CommandDispatcher::handleAuth},
     {"SET",    &CommandDispatcher::handleSet},
     {"GET",    &CommandDispatcher::handleGet},
     {"DEL",    &CommandDispatcher::handleDel},
@@ -459,6 +555,11 @@ const std::unordered_map<std::string, CommandDispatcher::CmdHandler> CommandDisp
     {"ZSCORE", &CommandDispatcher::handleZscore},
     {"ZRANK",  &CommandDispatcher::handleZrank},
     {"ZCARD",  &CommandDispatcher::handleZcard},
+    {"INFO",   &CommandDispatcher::handleInfo},
+    {"EXPIRE", &CommandDispatcher::handleExpire},
+    {"TTL",    &CommandDispatcher::handleTTL},
+    {"PERSIST",&CommandDispatcher::handlePersist},
+    {"SLOWLOG",&CommandDispatcher::handleSlowlog},
 };
 
 std::shared_ptr<RESPObject> CommandDispatcher::dispatch(const std::shared_ptr<RESPObject>& request) {
@@ -467,11 +568,43 @@ std::shared_ptr<RESPObject> CommandDispatcher::dispatch(const std::shared_ptr<RE
         return std::make_shared<RESPError>("ERR invalid request");
     }
 
+    auto args = flattenArgs(request);
+    auto t0 = std::chrono::high_resolution_clock::now();
+
     auto it = kDispatchTable.find(cmd);
+    std::shared_ptr<RESPObject> response;
     if (it != kDispatchTable.end()) {
-        return (this->*(it->second))(flattenArgs(request));
+        response = (this->*(it->second))(args);
+    } else {
+        response = std::make_shared<RESPError>("ERR unknown command '" + cmd + "'");
     }
-    return std::make_shared<RESPError>("ERR unknown command '" + cmd + "'");
+
+    if (slowlogThresholdUs_ >= 0) {
+        auto dur = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::high_resolution_clock::now() - t0).count();
+        if (dur >= slowlogThresholdUs_) {
+            std::string fullCmd = cmd;
+            for (size_t i = 1; i < args.size(); ++i) {
+                fullCmd += " ";
+                fullCmd += args[i];
+            }
+            slowlog_.push_back({slowlogId_++, std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count(), dur, fullCmd, ""});
+            if (slowlog_.size() > slowlogMaxLen_) {
+                slowlog_.erase(slowlog_.begin());
+            }
+        }
+    }
+
+    return response;
+}
+
+void CommandDispatcher::setSlowlogConfig(int64_t thresholdUs, size_t maxLen) {
+    slowlogThresholdUs_ = thresholdUs;
+    slowlogMaxLen_ = maxLen;
+    if (slowlog_.size() > slowlogMaxLen_) {
+        slowlog_.resize(slowlogMaxLen_);
+    }
 }
 
 } // namespace kvstore

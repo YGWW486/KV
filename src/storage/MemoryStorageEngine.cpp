@@ -1,4 +1,5 @@
 #include "MemoryStorageEngine.h"
+#include <chrono>
 
 namespace kvstore {
 
@@ -488,5 +489,53 @@ bool MemoryStorageEngine::flushall() {
     z_order_map_.clear();
     return true;
 }
+
+// ---- TTL stubs ----
+
+bool MemoryStorageEngine::expire(const std::string& key, int64_t ttlMs) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (string_map_.count(key) == 0 && hash_map_.count(key) == 0 &&
+        list_map_.count(key) == 0 && set_map_.count(key) == 0 &&
+        z_score_map_.count(key) == 0) return false;
+    expires_[key] = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count() + ttlMs;
+    return true;
+}
+
+int64_t MemoryStorageEngine::ttl(const std::string& key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!exists(key)) return -2;
+    auto it = expires_.find(key);
+    if (it == expires_.end()) return -1;
+    int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    int64_t remain = it->second - now;
+    return remain > 0 ? remain : -2;
+}
+
+bool MemoryStorageEngine::persist(const std::string& key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return expires_.erase(key) > 0;
+}
+
+size_t MemoryStorageEngine::evictExpired(size_t) { return 0; }
+
+// ---- Memory / LRU stubs ----
+
+size_t MemoryStorageEngine::getMemoryUsage() const { return memory_usage_.load(); }
+
+size_t MemoryStorageEngine::getKeyCount() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return string_map_.size() + hash_map_.size() + list_map_.size() +
+           set_map_.size() + z_score_map_.size();
+}
+
+std::string MemoryStorageEngine::getKeyspaceInfo() const {
+    return "db0:keys=" + std::to_string(getKeyCount()) + ",expires=0";
+}
+
+void MemoryStorageEngine::touchKey(const std::string&) {}
+void MemoryStorageEngine::tickLRUClock() {}
+size_t MemoryStorageEngine::evictLRU(size_t) { return 0; }
 
 } // namespace kvstore

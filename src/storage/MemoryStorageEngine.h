@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include <map>
 #include <mutex>
+#include <atomic>
 
 namespace kvstore {
 
@@ -57,7 +58,21 @@ public:
     std::vector<std::string> keys(const std::string& pattern) override;
     KeyType getType(const std::string& key) override;
     bool flushall() override;
-    
+
+    // --- TTL
+    bool expire(const std::string& key, int64_t ttlMs) override;
+    int64_t ttl(const std::string& key) override;
+    bool persist(const std::string& key) override;
+    size_t evictExpired(size_t maxSamples) override;
+
+    // --- Memory / LRU
+    size_t getMemoryUsage() const override;
+    size_t getKeyCount() const override;
+    std::string getKeyspaceInfo() const override;
+    void touchKey(const std::string& key) override;
+    void tickLRUClock() override;
+    size_t evictLRU(size_t targetBytes) override;
+
 private:
     // String 存储
     std::unordered_map<std::string, std::string> string_map_;
@@ -71,6 +86,9 @@ private:
     std::unordered_map<std::string, std::unordered_map<std::string, double>> z_score_map_;
     std::unordered_map<std::string, std::map<double, std::unordered_set<std::string>>> z_order_map_;
     
+    std::unordered_map<std::string, int64_t> expires_;
+    std::atomic<size_t> memory_usage_{0};
+    std::unordered_map<std::string, uint64_t> lru_clock_;
     // 锁（简单起见，一个大锁，后续可以优化为细粒度锁）
     mutable std::mutex mutex_;
 };

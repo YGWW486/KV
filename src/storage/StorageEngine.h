@@ -1,6 +1,7 @@
 #ifndef KVSTORE_STORAGE_STORAGE_ENGINE_H
 #define KVSTORE_STORAGE_STORAGE_ENGINE_H
 
+#include <cstdint>
 #include <string>
 #include <optional>
 #include <vector>
@@ -66,6 +67,20 @@ public:
     // --- 通用操作
     virtual std::vector<std::string> keys(const std::string& pattern) = 0;
     virtual bool flushall() = 0;
+
+    // --- TTL / 过期
+    virtual bool expire(const std::string& key, int64_t ttlMs) = 0;
+    virtual int64_t ttl(const std::string& key) = 0;       // ms remain, -1=no expire, -2=no key
+    virtual bool persist(const std::string& key) = 0;
+    virtual size_t evictExpired(size_t maxSamples) = 0;    // return count deleted
+
+    // --- Memory / LRU
+    virtual size_t getMemoryUsage() const = 0;
+    virtual size_t getKeyCount() const = 0;
+    virtual std::string getKeyspaceInfo() const = 0;
+    virtual void touchKey(const std::string& key) = 0;
+    virtual void tickLRUClock() = 0;
+    virtual size_t evictLRU(size_t targetBytes) = 0;       // return bytes freed
 };
 
 } // namespace kvstore
