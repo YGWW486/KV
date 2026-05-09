@@ -36,7 +36,7 @@ bool eraseKeyFromAllTypes(
     const std::string& key,
     std::unordered_map<std::string, std::string>& string_map,
     std::unordered_map<std::string, std::unordered_map<std::string, std::string>>& hash_map,
-    std::unordered_map<std::string, std::list<std::string>>& list_map,
+    std::unordered_map<std::string, std::deque<std::string>>& list_map,
     std::unordered_map<std::string, std::unordered_set<std::string>>& set_map,
     std::unordered_map<std::string, std::unordered_map<std::string, double>>& z_score_map,
     std::unordered_map<std::string, std::map<double, std::unordered_set<std::string>>>& z_order_map) {
@@ -133,6 +133,7 @@ std::vector<std::string> MemoryStorageEngine::hkeys(const std::string& key) {
     if (hash_it == hash_map_.end()) {
         return result;
     }
+    result.reserve(hash_it->second.size());
     for (const auto& pair : hash_it->second) {
         result.push_back(pair.first);
     }
@@ -146,6 +147,7 @@ std::vector<std::string> MemoryStorageEngine::hvals(const std::string& key) {
     if (hash_it == hash_map_.end()) {
         return result;
     }
+    result.reserve(hash_it->second.size());
     for (const auto& pair : hash_it->second) {
         result.push_back(pair.second);
     }
@@ -168,6 +170,7 @@ std::vector<std::pair<std::string, std::string>> MemoryStorageEngine::hgetall(co
     if (hash_it == hash_map_.end()) {
         return result;
     }
+    result.reserve(hash_it->second.size());
     for (const auto& pair : hash_it->second) {
         result.emplace_back(pair.first, pair.second);
     }
@@ -205,7 +208,7 @@ std::optional<std::string> MemoryStorageEngine::lpop(const std::string& key) {
     if (list_it == list_map_.end() || list_it->second.empty()) {
         return std::nullopt;
     }
-    std::string value = list_it->second.front();
+    std::string value = std::move(list_it->second.front());
     list_it->second.pop_front();
     if (list_it->second.empty()) {
         list_map_.erase(list_it);
@@ -219,7 +222,7 @@ std::optional<std::string> MemoryStorageEngine::rpop(const std::string& key) {
     if (list_it == list_map_.end() || list_it->second.empty()) {
         return std::nullopt;
     }
-    std::string value = list_it->second.back();
+    std::string value = std::move(list_it->second.back());
     list_it->second.pop_back();
     if (list_it->second.empty()) {
         list_map_.erase(list_it);
@@ -244,10 +247,9 @@ std::vector<std::string> MemoryStorageEngine::lrange(const std::string& key, lon
     if (end >= len) end = len - 1;
     if (start > end) return result;
     
-    auto it = list.begin();
-    std::advance(it, start);
-    for (long i = start; i <= end; ++i, ++it) {
-        result.push_back(*it);
+    result.reserve(static_cast<size_t>(end - start + 1));
+    for (long i = start; i <= end; ++i) {
+        result.push_back(list[static_cast<size_t>(i)]);
     }
     
     return result;
@@ -301,6 +303,7 @@ std::vector<std::string> MemoryStorageEngine::smembers(const std::string& key) {
     if (set_it == set_map_.end()) {
         return result;
     }
+    result.reserve(set_it->second.size());
     for (const auto& s : set_it->second) {
         result.push_back(s);
     }
@@ -406,32 +409,30 @@ std::vector<std::pair<double, std::string>> MemoryStorageEngine::zrange(const st
 std::vector<std::pair<double, std::string>> MemoryStorageEngine::zrevrange(const std::string& key, long start, long end) {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<std::pair<double, std::string>> result;
-    auto order_map_it = z_order_map_.find(key);
-    if (order_map_it == z_order_map_.end()) {
-        return result;
-    }
-    
-    const auto& order_map = order_map_it->second;
-    std::vector<std::pair<double, std::string>> temp;
-    
-    for (const auto& score_pair : order_map) {
-        double score = score_pair.first;
-        for (const auto& value : score_pair.second) {
-            temp.emplace_back(score, value);
-        }
-    }
-    
-    long len = static_cast<long>(temp.size());
+    auto score_map_it = z_score_map_.find(key);
+    if (score_map_it == z_score_map_.end()) return result;
+    long len = static_cast<long>(score_map_it->second.size());
+
     if (start < 0) start += len;
     if (end < 0) end += len;
     if (start < 0) start = 0;
     if (end >= len) end = len - 1;
     if (start > end) return result;
-    
-    for (long i = len - 1 - start; i >= len - 1 - end; --i) {
-        result.push_back(temp[i]);
+
+    result.reserve(static_cast<size_t>(end - start + 1));
+    auto order_map_it = z_order_map_.find(key);
+    const auto& order_map = order_map_it->second;
+    long pos = 0;
+
+    for (auto score_rit = order_map.rbegin(); score_rit != order_map.rend(); ++score_rit) {
+        for (const auto& member : score_rit->second) {
+            if (pos >= start) {
+                result.emplace_back(score_rit->first, member);
+                if (pos >= end) return result;
+            }
+            ++pos;
+        }
     }
-    
     return result;
 }
 

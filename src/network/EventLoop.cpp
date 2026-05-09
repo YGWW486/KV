@@ -5,6 +5,7 @@
 
 #include <sstream>
 #include <cassert>
+#include <algorithm>
 
 namespace kvstore {
 
@@ -124,40 +125,55 @@ void EventLoop::handleRead() {
 TimerId EventLoop::addTimer(TimerCallback cb, Timestamp when, double interval) {
     std::lock_guard<std::mutex> lock(timerMutex_);
     const int64_t sequence = nextTimerSequence_++;
-    timers_.push_back(TimerEntry{sequence, when, std::move(cb), interval, interval > 0.0});
+    TimerEntry entry{sequence, when, std::move(cb), interval, interval > 0.0};
+    auto pos = std::lower_bound(timers_.begin(), timers_.end(), entry);
+    timers_.insert(pos, std::move(entry));
     return TimerId(sequence, sequence);
 }
 
 void EventLoop::processTimers() {
     const Timestamp now = Timestamp::now();
-    std::vector<TimerEntry> expired;
+    std::vector<TimerEntry> expiredExpired;
+    std::vector<TimerEntry> toReinsert;
 
     {
         std::lock_guard<std::mutex> lock(timerMutex_);
-        auto it = timers_.begin();
-        while (it != timers_.end()) {
-            if (cancelledTimers_.count(it->sequence)) {
-                it = timers_.erase(it);
-                continue;
-            }
-            if (timeDifference(it->expiration, now) <= 0.0) {
-                expired.push_back(*it);
-                if (it->repeat) {
-                    it->expiration = addTime(now, it->interval);
-                    ++it;
-                } else {
-                    it = timers_.erase(it);
-                }
-            } else {
-                ++it;
-            }
-        }
+        // Remove cancelled timers
+        timers_.erase(std::remove_if(timers_.begin(), timers_.end(),
+            [this](const TimerEntry& e) { return cancelledTimers_.count(e.sequence); }),
+            timers_.end());
         cancelledTimers_.clear();
+
+        // Process expired timers (sorted, so break at first non-expired)
+        size_t expiredCount = 0;
+        for (auto& entry : timers_) {
+            if (timeDifference(entry.expiration, now) > 0.0) break;
+            expiredExpired.push_back(entry);
+            if (entry.repeat) {
+                entry.expiration = addTime(now, entry.interval);
+                toReinsert.push_back(entry);
+            }
+            ++expiredCount;
+        }
+        if (expiredCount > 0) {
+            timers_.erase(timers_.begin(), timers_.begin() + static_cast<long>(expiredCount));
+        }
+        // Reinsert repeat timers in sorted order
+        for (auto& entry : toReinsert) {
+            auto pos = std::lower_bound(timers_.begin(), timers_.end(), entry);
+            timers_.insert(pos, std::move(entry));
+        }
     }
 
-    for (const auto& timer : expired) {
+    for (const auto& timer : expiredExpired) {
         timer.callback();
     }
+}
+
+Timestamp EventLoop::nextExpiration() const {
+    std::lock_guard<std::mutex> lock(timerMutex_);
+    if (timers_.empty()) return Timestamp::invalid();
+    return timers_.front().expiration;
 }
 
 bool EventLoop::isInLoopThread() const {

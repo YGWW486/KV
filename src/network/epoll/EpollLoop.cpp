@@ -9,7 +9,6 @@
 #include <unistd.h>
 
 #include <cassert>
-#include <chrono>
 #include <stdexcept>
 
 namespace kvstore {
@@ -102,18 +101,19 @@ void EpollLoop::loop() {
     const int kMaxEvents = 256;
     struct epoll_event events[kMaxEvents];
 
-    int64_t loop_count = 0;
-    int64_t wait_ns = 0;
-    int64_t proc_ns = 0;
-
     while (!quit_) {
         activeChannels_.clear();
 
-        auto before_wait = std::chrono::high_resolution_clock::now();
-        const int timeoutMs = 1000;
+        Timestamp nextExp = nextExpiration();
+        int timeoutMs = 1000;
+        if (nextExp.valid()) {
+            double diff = timeDifference(nextExp, Timestamp::now());
+            if (diff <= 0.0) timeoutMs = 0;
+            else if (diff < 1.0) timeoutMs = static_cast<int>(diff * 1000.0);
+        }
+
         int numEvents = ::epoll_wait(epollfd_, events, kMaxEvents, timeoutMs);
         pollReturnTime_ = Timestamp::now();
-        auto after_wait = std::chrono::high_resolution_clock::now();
 
         if (numEvents < 0) {
             if (errno == EINTR) {
@@ -144,19 +144,6 @@ void EpollLoop::loop() {
 
         processTimers();
         doPendingFunctors();
-
-        auto after_proc = std::chrono::high_resolution_clock::now();
-        wait_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(after_wait - before_wait).count();
-        proc_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(after_proc - after_wait).count();
-        loop_count++;
-
-        if (loop_count % 500 == 0) {
-            double w_ms = static_cast<double>(wait_ns) / 1e6;
-            double p_ms = static_cast<double>(proc_ns) / 1e6;
-            LOG_INFO << "=== LOOP STATS (iter=" << loop_count << ") ===";
-            LOG_INFO << "  epoll_wait total: " << w_ms << " ms (" << (w_ms / (w_ms + p_ms) * 100) << "%)";
-            LOG_INFO << "  processing total:" << p_ms << " ms (" << (p_ms / (w_ms + p_ms) * 100) << "%)";
-        }
     }
 
     LOG_INFO << "EpollLoop " << this << " stop looping";

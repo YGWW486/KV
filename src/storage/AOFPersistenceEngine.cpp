@@ -7,6 +7,15 @@
 #include <chrono>
 #include <mutex>
 #include <cstdio>
+#include <cstring>
+
+#ifdef _WIN32
+#include <io.h>
+#define fsync _commit
+#define fdatasync _commit
+#else
+#include <unistd.h>
+#endif
 
 namespace kvstore {
 
@@ -16,7 +25,90 @@ AOFPersistenceEngine::AOFPersistenceEngine(const std::string& aof_path)
 }
 
 AOFPersistenceEngine::~AOFPersistenceEngine() {
+    closeAOFFile();
     LOG_INFO << "AOF持久化引擎销毁";
+}
+
+void AOFPersistenceEngine::openAOFFile() {
+    if (aof_fp_) return;
+#ifdef _WIN32
+    aof_fp_ = _fsopen(aof_path_.c_str(), "a", _SH_DENYNO);
+#else
+    aof_fp_ = std::fopen(aof_path_.c_str(), "a");
+#endif
+    if (!aof_fp_) {
+        LOG_ERROR << "无法打开AOF文件: " << aof_path_;
+        return;
+    }
+#ifdef _WIN32
+    aof_fd_ = _fileno(aof_fp_);
+#else
+    aof_fd_ = fileno(aof_fp_);
+#endif
+    // Disable stdio buffering — we manage flush ourselves
+    std::setvbuf(aof_fp_, nullptr, _IONBF, 0);
+}
+
+void AOFPersistenceEngine::closeAOFFile() {
+    if (aof_fp_) {
+        std::fclose(aof_fp_);
+        aof_fp_ = nullptr;
+        aof_fd_ = -1;
+    }
+}
+
+std::string AOFPersistenceEngine::formatAOFLine(const std::vector<std::string>& argv) {
+    std::ostringstream oss;
+    for (size_t i = 0; i < argv.size(); ++i) {
+        if (i > 0) oss << ' ';
+        const auto& arg = argv[i];
+        bool needs_quote = arg.empty() ||
+            std::any_of(arg.begin(), arg.end(), [](char c) {
+                return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '"' || c == '\\';
+            });
+        if (needs_quote) {
+            oss << '"';
+            for (char c : arg) {
+                if (c == '"' || c == '\\') oss << '\\';
+                oss << c;
+            }
+            oss << '"';
+        } else {
+            oss << arg;
+        }
+    }
+    return oss.str();
+}
+
+static std::vector<std::string> splitArgs(const std::string& s) {
+    std::vector<std::string> args;
+    size_t i = 0;
+    while (i < s.size()) {
+        while (i < s.size() && s[i] == ' ') ++i;
+        if (i >= s.size()) break;
+        if (s[i] == '"') {
+            ++i;
+            std::string arg;
+            while (i < s.size()) {
+                if (s[i] == '\\' && i + 1 < s.size()) {
+                    arg += s[i + 1];
+                    i += 2;
+                } else if (s[i] == '"') {
+                    ++i;
+                    break;
+                } else {
+                    arg += s[i++];
+                }
+            }
+            args.push_back(std::move(arg));
+        } else {
+            size_t end = i;
+            while (end < s.size() && s[end] != ' ') ++end;
+            args.push_back(s.substr(i, end - i));
+            i = end;
+        }
+    }
+    return args;
 }
 
 bool AOFPersistenceEngine::load(StorageEngine* storage) {
@@ -35,16 +127,6 @@ bool AOFPersistenceEngine::load(StorageEngine* storage) {
 
     std::string line;
     size_t line_count = 0;
-
-    auto splitArgs = [](const std::string& s) -> std::vector<std::string> {
-        std::vector<std::string> args;
-        std::istringstream iss(s);
-        std::string arg;
-        while (iss >> arg) {
-            args.push_back(arg);
-        }
-        return args;
-    };
 
     while (std::getline(file, line)) {
         if (line.empty()) continue;
@@ -121,14 +203,12 @@ void AOFPersistenceEngine::recordWrite(const std::string& command) {
         return;
     }
 
-    std::ofstream file(aof_path_, std::ios::app);
-    if (!file.is_open()) {
-        LOG_ERROR << "无法打开AOF文件进行追加: " << aof_path_;
-        return;
-    }
+    openAOFFile();
+    if (!aof_fp_) return;
 
-    file << command << "\n";
-    file.close();
+    std::fwrite(command.c_str(), 1, command.size(), aof_fp_);
+    std::fwrite("\n", 1, 1, aof_fp_);
+    std::fflush(aof_fp_);
 
     if (policy_ == AOFPolicy::ALWAYS) {
         syncAOF();
@@ -143,7 +223,6 @@ void AOFPersistenceEngine::setPolicy(AOFPolicy policy) {
 }
 
 std::string AOFPersistenceEngine::getStatus() const {
-    std::ifstream file(aof_path_);
     std::string status = "AOF持久化引擎 - 策略: ";
 
     switch (policy_) {
@@ -152,11 +231,11 @@ std::string AOFPersistenceEngine::getStatus() const {
         case AOFPolicy::NO: status += "NO"; break;
     }
 
+    // Use stat to get file size without opening
+    std::ifstream file(aof_path_, std::ios::ate | std::ios::binary);
     if (file.is_open()) {
-        file.seekg(0, std::ios::end);
-        size_t size = file.tellg();
+        status += ", 文件大小: " + std::to_string(file.tellg()) + " 字节";
         file.close();
-        status += ", 文件大小: " + std::to_string(size) + " 字节";
     } else {
         status += ", 文件不存在";
     }
@@ -170,11 +249,15 @@ bool AOFPersistenceEngine::rewriteAOF(const StorageEngine* storage) {
         return false;
     }
 
+    // Close the live AOF file handle before rewriting
+    closeAOFFile();
+
     std::string temp_path = aof_path_ + ".tmp";
     std::ofstream temp_file(temp_path);
 
     if (!temp_file.is_open()) {
         LOG_ERROR << "无法创建临时AOF文件: " << temp_path;
+        openAOFFile();
         return false;
     }
 
@@ -189,14 +272,14 @@ bool AOFPersistenceEngine::rewriteAOF(const StorageEngine* storage) {
         switch (type) {
         case KeyType::String: {
             if (auto value = ms->get(key)) {
-                temp_file << "SET " << key << " " << *value << "\n";
+                temp_file << formatAOFLine({"SET", key, *value}) << "\n";
                 ++key_count;
             }
             break;
         }
         case KeyType::Hash: {
             for (const auto& [field, value] : ms->hgetall(key)) {
-                temp_file << "HSET " << key << " " << field << " " << value << "\n";
+                temp_file << formatAOFLine({"HSET", key, field, value}) << "\n";
             }
             ++key_count;
             break;
@@ -204,14 +287,14 @@ bool AOFPersistenceEngine::rewriteAOF(const StorageEngine* storage) {
         case KeyType::List: {
             auto elements = ms->lrange(key, 0, -1);
             for (const auto& elem : elements) {
-                temp_file << "RPUSH " << key << " " << elem << "\n";
+                temp_file << formatAOFLine({"RPUSH", key, elem}) << "\n";
             }
             ++key_count;
             break;
         }
         case KeyType::Set: {
             for (const auto& member : ms->smembers(key)) {
-                temp_file << "SADD " << key << " " << member << "\n";
+                temp_file << formatAOFLine({"SADD", key, member}) << "\n";
             }
             ++key_count;
             break;
@@ -219,7 +302,7 @@ bool AOFPersistenceEngine::rewriteAOF(const StorageEngine* storage) {
         case KeyType::ZSet: {
             auto members = ms->zrange(key, 0, -1);
             for (const auto& [score, member] : members) {
-                temp_file << "ZADD " << key << " " << score << " " << member << "\n";
+                temp_file << formatAOFLine({"ZADD", key, std::to_string(score), member}) << "\n";
             }
             ++key_count;
             break;
@@ -234,15 +317,24 @@ bool AOFPersistenceEngine::rewriteAOF(const StorageEngine* storage) {
     std::remove(aof_path_.c_str());
     if (std::rename(temp_path.c_str(), aof_path_.c_str()) != 0) {
         LOG_ERROR << "重写AOF文件失败，无法替换原文件";
+        openAOFFile();
         return false;
     }
+
+    openAOFFile();
 
     LOG_INFO << "AOF重写完成，压缩了 " << key_count << " 个键";
     return true;
 }
 
 void AOFPersistenceEngine::syncAOF() {
-    LOG_DEBUG << "AOF文件同步完成";
+    if (aof_fd_ >= 0) {
+#ifdef _WIN32
+        _commit(aof_fd_);
+#else
+        fdatasync(aof_fd_);
+#endif
+    }
 }
 
 } // namespace kvstore

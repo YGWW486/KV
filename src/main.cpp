@@ -3,7 +3,7 @@
 #include "network/InetAddress.h"
 #include "protocol/RESPParser.h"
 #include "commands/CommandDispatcher.h"
-#include "storage/MemoryStorageEngine.h"
+#include "storage/SegmentedMemoryStorageEngine.h"
 #include "storage/PersistenceEngine.h"
 #include "utils/Logging.h"
 #include "utils/Config.h"
@@ -85,7 +85,7 @@ public:
     }
 
     void start() {
-        loop_->runEvery(0.5, [this]() { acceptLoop(); });
+        loop_->runEvery(0.05, [this]() { acceptLoop(); });
         loop_->runEvery(1.0, [this]() { aof_.syncAOF(); });
         loop_->runEvery(30.0, [this]() { rdb_.save(&storage_); });
     }
@@ -95,28 +95,36 @@ private:
         if (listenSock_ == INVALID_SOCKET) {
             return;
         }
-        sockaddr_in addr{};
-        int addrlen = sizeof(addr);
-        SOCKET connfd = ::accept(listenSock_, reinterpret_cast<sockaddr*>(&addr), &addrlen);
-        if (connfd == INVALID_SOCKET) {
-            return;
+        // Accept all pending connections in one batch
+        while (true) {
+            sockaddr_in addr{};
+            int addrlen = sizeof(addr);
+            SOCKET connfd = ::accept(listenSock_, reinterpret_cast<sockaddr*>(&addr), &addrlen);
+            if (connfd == INVALID_SOCKET) {
+                int err = WSAGetLastError();
+                if (err == WSAEWOULDBLOCK) break;
+                if (err != WSAECONNRESET) {
+                    LOG_WARN << "Accept error: " << err;
+                }
+                break;
+            }
+
+            std::string connName = "KV-" + std::to_string(nextConnId_);
+            InetAddress peerAddr(addr);
+            InetAddress localAddr;
+            LOG_INFO << "New connection [" << connName << "] from " << peerAddr.toIpPort();
+
+            auto conn = std::make_shared<Connection>(loop_, connName, connfd, localAddr, peerAddr);
+            connPool_.addConnection(conn);
+
+            conn->setConnectionCallback(
+                std::bind(&KvServer::onConnection, this, std::placeholders::_1));
+            conn->setMessageCallback(
+                std::bind(&KvServer::onMessage, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+
+            conn->connectEstablished();
+            nextConnId_++;
         }
-
-        std::string connName = "KV-" + std::to_string(nextConnId_);
-        InetAddress peerAddr(addr);
-        InetAddress localAddr;
-        LOG_INFO << "New connection [" << connName << "] from " << peerAddr.toIpPort();
-
-        auto conn = std::make_shared<Connection>(loop_, connName, connfd, localAddr, peerAddr);
-        connPool_.addConnection(conn);
-
-        conn->setConnectionCallback(
-            std::bind(&KvServer::onConnection, this, std::placeholders::_1));
-        conn->setMessageCallback(
-            std::bind(&KvServer::onMessage, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
-
-        conn->connectEstablished();
-        nextConnId_++;
     }
 
     void onConnection(const std::shared_ptr<Connection>& conn) {
@@ -153,7 +161,7 @@ private:
     SOCKET listenSock_ = INVALID_SOCKET;
     ConnectionPool connPool_;
     RESPParser parser_;
-    MemoryStorageEngine storage_;
+    SegmentedMemoryStorageEngine storage_;
     AOFPersistenceEngine aof_;
     RDBPersistenceEngine rdb_;
     CommandDispatcher dispatcher_;
@@ -323,7 +331,7 @@ private:
     Acceptor acceptor_;
     ConnectionPool connPool_;
     RESPParser parser_;
-    MemoryStorageEngine storage_;
+    SegmentedMemoryStorageEngine storage_;
     AOFPersistenceEngine aof_;
     RDBPersistenceEngine rdb_;
     CommandDispatcher dispatcher_;

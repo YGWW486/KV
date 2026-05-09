@@ -42,7 +42,7 @@ private:
     void wakeup() override;
     void handleWakeup();
     void handleRead(); // 兼容基类（保留）
-    void handleCompletions();
+    void handleCompletions(DWORD initialTimeoutMs);
     void postCompletion(Channel* channel, DWORD bytesTransferred);
     void postRead(Channel* channel);
     void postWrite(Channel* channel);

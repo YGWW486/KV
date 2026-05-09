@@ -4,6 +4,7 @@
 #include "protocol/RESP.h"
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 namespace kvstore {
 
@@ -58,6 +59,9 @@ private:
     std::vector<std::string> flattenArgs(const std::shared_ptr<RESPObject>& request);
 
     void recordAOF(const std::string& cmd, const std::vector<std::string>& argv);
+
+    using CmdHandler = std::shared_ptr<RESPObject> (CommandDispatcher::*)(const std::vector<std::string>&);
+    static const std::unordered_map<std::string, CmdHandler> kDispatchTable;
 
     StorageEngine* storage_;
     PersistenceEngine* aof_;

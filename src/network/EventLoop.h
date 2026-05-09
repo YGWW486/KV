@@ -51,6 +51,7 @@ protected:
 
     TimerId addTimer(TimerCallback cb, Timestamp when, double interval);
     void processTimers();
+    Timestamp nextExpiration() const;
 
     std::atomic<bool> looping_;
     std::atomic<bool> quit_;
@@ -72,9 +73,12 @@ protected:
         TimerCallback callback;
         double interval;
         bool repeat;
+        bool operator<(const TimerEntry& rhs) const {
+            return expiration < rhs.expiration;
+        }
     };
 
-    std::mutex timerMutex_;
+    mutable std::mutex timerMutex_;
     std::vector<TimerEntry> timers_;
     std::unordered_set<int64_t> cancelledTimers_;
     int64_t nextTimerSequence_;

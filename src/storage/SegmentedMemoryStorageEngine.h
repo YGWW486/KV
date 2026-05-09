@@ -3,7 +3,7 @@
 
 #include "storage/StorageEngine.h"
 #include <unordered_map>
-#include <list>
+#include <deque>
 #include <unordered_set>
 #include <map>
 #include <shared_mutex>
@@ -17,7 +17,7 @@ static constexpr size_t kDefaultSegmentCount = 16;
 struct alignas(64) StorageSegment {
     std::unordered_map<std::string, std::string> string_map;
     std::unordered_map<std::string, std::unordered_map<std::string, std::string>> hash_map;
-    std::unordered_map<std::string, std::list<std::string>> list_map;
+    std::unordered_map<std::string, std::deque<std::string>> list_map;
     std::unordered_map<std::string, std::unordered_set<std::string>> set_map;
     std::unordered_map<std::string, std::unordered_map<std::string, double>> z_score_map;
     std::unordered_map<std::string, std::map<double, std::unordered_set<std::string>>> z_order_map;

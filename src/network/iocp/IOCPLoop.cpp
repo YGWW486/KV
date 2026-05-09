@@ -179,7 +179,16 @@ void IOCPLoop::loop() {
 
     while (!quit_) {
         activeChannels_.clear();
-        handleCompletions();
+
+        Timestamp nextExp = nextExpiration();
+        DWORD timeoutMs = 1000;
+        if (nextExp.valid()) {
+            double diff = timeDifference(nextExp, Timestamp::now());
+            if (diff <= 0.0) timeoutMs = 0;
+            else if (diff < 1.0) timeoutMs = static_cast<DWORD>(diff * 1000.0);
+        }
+
+        handleCompletions(timeoutMs);
 
         eventHandling_ = true;
         for (Channel* channel : activeChannels_) {
@@ -217,12 +226,11 @@ void IOCPLoop::handleWakeup() {
     // 这里是简化版，实际可以用 socketpair 发送消息
 }
 
-void IOCPLoop::handleCompletions() {
+void IOCPLoop::handleCompletions(DWORD initialTimeoutMs) {
     DWORD bytesTransferred = 0;
     ULONG_PTR completionKey = 0;
     LPOVERLAPPED pOverlapped = nullptr;
 
-    DWORD timeoutMs = 1000; // 1秒超时
     pollReturnTime_ = Timestamp::now();
 
     BOOL success = GetQueuedCompletionStatus(
@@ -230,7 +238,7 @@ void IOCPLoop::handleCompletions() {
         &bytesTransferred,
         &completionKey,
         &pOverlapped,
-        timeoutMs
+        initialTimeoutMs
     );
 
     const DWORD gqcsErr = success ? ERROR_SUCCESS : GetLastError();
@@ -265,7 +273,6 @@ void IOCPLoop::handleCompletions() {
     }
 
     if (ctx->eventType == 0) { // read
-        // 重新投递0字节读通知，保持可读事件持续生效。
         SOCKET fd = static_cast<SOCKET>(channel->fd());
         ctx->reset();
         DWORD flags = 0;
@@ -280,7 +287,6 @@ void IOCPLoop::handleCompletions() {
         }
         channel->set_revents(Channel::kReadEvent);
     } else { // write
-        // 对写事件也采用0字节通知，避免IOCP与Connection发送路径混用。
         if (channel->isWriting()) {
             SOCKET fd = static_cast<SOCKET>(channel->fd());
             ctx->reset();

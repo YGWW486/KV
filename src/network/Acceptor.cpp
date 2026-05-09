@@ -88,47 +88,53 @@ void Acceptor::listen() {
 
 void Acceptor::handleRead() {
     loop_->assertInLoopThread();
-    InetAddress peerAddr;
-    sockaddr_in addr{};
+
+    // Accept all pending connections in a loop
+    while (true) {
+        InetAddress peerAddr;
+        sockaddr_in addr{};
 
 #ifdef _WIN32
-    int addrlen = static_cast<int>(sizeof addr);
-    socket_t connfd = ::accept(acceptSocket_, reinterpret_cast<sockaddr*>(&addr), &addrlen);
+        int addrlen = static_cast<int>(sizeof addr);
+        socket_t connfd = ::accept(acceptSocket_, reinterpret_cast<sockaddr*>(&addr), &addrlen);
 #else
-    socklen_t addrlen = static_cast<socklen_t>(sizeof addr);
-    socket_t connfd = ::accept(acceptSocket_, reinterpret_cast<sockaddr*>(&addr), &addrlen);
-    if (connfd >= 0) {
-        int flags = ::fcntl(connfd, F_GETFL, 0);
-        if (flags >= 0) {
-            ::fcntl(connfd, F_SETFL, flags | O_NONBLOCK);
-        }
-        int fdflags = ::fcntl(connfd, F_GETFD, 0);
-        if (fdflags >= 0) {
-            ::fcntl(connfd, F_SETFD, fdflags | FD_CLOEXEC);
-        }
-    }
+        socklen_t addrlen = static_cast<socklen_t>(sizeof addr);
+        socket_t connfd = ::accept(acceptSocket_, reinterpret_cast<sockaddr*>(&addr), &addrlen);
 #endif
-    if (connfd != kInvalidSocket) {
-        peerAddr.setSockAddrInet(addr);
-        if (newConnectionCallback_) {
-            newConnectionCallback_(connfd, peerAddr);
+        if (connfd != kInvalidSocket) {
+#ifndef _WIN32
+            int flags = ::fcntl(connfd, F_GETFL, 0);
+            if (flags >= 0) {
+                ::fcntl(connfd, F_SETFL, flags | O_NONBLOCK);
+            }
+            int fdflags = ::fcntl(connfd, F_GETFD, 0);
+            if (fdflags >= 0) {
+                ::fcntl(connfd, F_SETFD, fdflags | FD_CLOEXEC);
+            }
+#endif
+            peerAddr.setSockAddrInet(addr);
+            if (newConnectionCallback_) {
+                newConnectionCallback_(connfd, peerAddr);
+            } else {
+#ifdef _WIN32
+                closesocket(connfd);
+#else
+                ::close(connfd);
+#endif
+            }
         } else {
+            // No more pending connections
 #ifdef _WIN32
-            closesocket(connfd);
+            int err = WSAGetLastError();
+            if (err == WSAEWOULDBLOCK) break;
+            LOG_WARN << "Accept failed, err: " << err;
 #else
-            ::close(connfd);
-#endif
-        }
-    } else {
-#ifdef _WIN32
-        int err = WSAGetLastError();
-        LOG_WARN << "Accept failed, err: " << err;
-#else
-        int err = errno;
-        if (err != EAGAIN && err != EWOULDBLOCK) {
+            int err = errno;
+            if (err == EAGAIN || err == EWOULDBLOCK) break;
             LOG_WARN << "Accept failed: " << strerror(err);
-        }
 #endif
+            break;
+        }
     }
 }
 

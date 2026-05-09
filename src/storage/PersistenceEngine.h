@@ -4,6 +4,9 @@
 #include <string>
 #include <memory>
 #include <functional>
+#include <vector>
+#include <sstream>
+#include <algorithm>
 #include "StorageEngine.h"
 
 namespace kvstore {
@@ -50,10 +53,17 @@ public:
 
     void syncAOF();
 
+    static std::string formatAOFLine(const std::vector<std::string>& argv);
+
 private:
+    void openAOFFile();
+    void closeAOFFile();
+
     std::string aof_path_;
     AOFPolicy policy_;
-    
+    FILE* aof_fp_ = nullptr;
+    int aof_fd_ = -1;
+
     // 重写AOF文件（压缩）
     bool rewriteAOF(const StorageEngine* storage);
 };

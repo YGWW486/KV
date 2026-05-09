@@ -117,8 +117,10 @@ std::vector<std::string> SegmentedMemoryStorageEngine::hkeys(const std::string& 
     SEG; LOCK_SH;
     std::vector<std::string> result;
     auto hit = seg.hash_map.find(key);
-    if (hit != seg.hash_map.end())
+    if (hit != seg.hash_map.end()) {
+        result.reserve(hit->second.size());
         for (const auto& p : hit->second) result.push_back(p.first);
+    }
     return result;
 }
 
@@ -126,8 +128,10 @@ std::vector<std::string> SegmentedMemoryStorageEngine::hvals(const std::string& 
     SEG; LOCK_SH;
     std::vector<std::string> result;
     auto hit = seg.hash_map.find(key);
-    if (hit != seg.hash_map.end())
+    if (hit != seg.hash_map.end()) {
+        result.reserve(hit->second.size());
         for (const auto& p : hit->second) result.push_back(p.second);
+    }
     return result;
 }
 
@@ -135,8 +139,10 @@ std::vector<std::pair<std::string, std::string>> SegmentedMemoryStorageEngine::h
     SEG; LOCK_SH;
     std::vector<std::pair<std::string, std::string>> result;
     auto hit = seg.hash_map.find(key);
-    if (hit != seg.hash_map.end())
+    if (hit != seg.hash_map.end()) {
+        result.reserve(hit->second.size());
         for (const auto& p : hit->second) result.emplace_back(p.first, p.second);
+    }
     return result;
 }
 
@@ -175,7 +181,7 @@ std::optional<std::string> SegmentedMemoryStorageEngine::lpop(const std::string&
     SEG; LOCK_EX;
     auto it = seg.list_map.find(key);
     if (it == seg.list_map.end() || it->second.empty()) return std::nullopt;
-    std::string v = it->second.front();
+    std::string v = std::move(it->second.front());
     it->second.pop_front();
     if (it->second.empty()) {
         seg.list_map.erase(it);
@@ -188,7 +194,7 @@ std::optional<std::string> SegmentedMemoryStorageEngine::rpop(const std::string&
     SEG; LOCK_EX;
     auto it = seg.list_map.find(key);
     if (it == seg.list_map.end() || it->second.empty()) return std::nullopt;
-    std::string v = it->second.back();
+    std::string v = std::move(it->second.back());
     it->second.pop_back();
     if (it->second.empty()) {
         seg.list_map.erase(it);
@@ -209,9 +215,8 @@ std::vector<std::string> SegmentedMemoryStorageEngine::lrange(const std::string&
     if (start < 0) start = 0;
     if (end >= len) end = len - 1;
     if (start > end) return result;
-    auto lit = lst.begin();
-    std::advance(lit, start);
-    for (long i = start; i <= end; ++i, ++lit) result.push_back(*lit);
+    result.reserve(static_cast<size_t>(end - start + 1));
+    for (long i = start; i <= end; ++i) result.push_back(lst[static_cast<size_t>(i)]);
     return result;
 }
 
@@ -257,8 +262,10 @@ std::vector<std::string> SegmentedMemoryStorageEngine::smembers(const std::strin
     SEG; LOCK_SH;
     std::vector<std::string> result;
     auto it = seg.set_map.find(key);
-    if (it != seg.set_map.end())
+    if (it != seg.set_map.end()) {
+        result.reserve(it->second.size());
         for (const auto& m : it->second) result.push_back(m);
+    }
     return result;
 }
 
@@ -337,20 +344,30 @@ std::vector<std::pair<double, std::string>> SegmentedMemoryStorageEngine::zrevra
     const std::string& key, long start, long end) {
     SEG; LOCK_SH;
     std::vector<std::pair<double, std::string>> result;
-    auto it = seg.z_order_map.find(key);
-    if (it == seg.z_order_map.end()) return result;
-    std::vector<std::pair<double, std::string>> temp;
-    for (const auto& [score, members] : it->second)
-        for (const auto& member : members)
-            temp.emplace_back(score, member);
-    long len = static_cast<long>(temp.size());
+    auto score_it = seg.z_score_map.find(key);
+    if (score_it == seg.z_score_map.end()) return result;
+    long len = static_cast<long>(score_it->second.size());
+
     if (start < 0) start += len;
     if (end < 0) end += len;
     if (start < 0) start = 0;
     if (end >= len) end = len - 1;
     if (start > end) return result;
-    for (long i = len - 1 - start; i >= len - 1 - end; --i)
-        result.push_back(temp[i]);
+
+    result.reserve(static_cast<size_t>(end - start + 1));
+    auto order_it = seg.z_order_map.find(key);
+    const auto& order_map = order_it->second;
+    long pos = 0;
+
+    for (auto score_rit = order_map.rbegin(); score_rit != order_map.rend(); ++score_rit) {
+        for (const auto& member : score_rit->second) {
+            if (pos >= start) {
+                result.emplace_back(score_rit->first, member);
+                if (pos >= end) return result;
+            }
+            ++pos;
+        }
+    }
     return result;
 }
 

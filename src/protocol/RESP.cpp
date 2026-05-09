@@ -1,41 +1,77 @@
 #include "protocol/RESP.h"
-#include <sstream>
-#include <iomanip>
+#include <string>
 
 namespace kvstore {
 
+static std::string intToStr(int64_t n) {
+    if (n == 0) return "0";
+    std::string s;
+    s.reserve(20);
+    bool neg = n < 0;
+    if (neg) n = -n;
+    while (n > 0) {
+        s.push_back(static_cast<char>('0' + (n % 10)));
+        n /= 10;
+    }
+    if (neg) s.push_back('-');
+    std::reverse(s.begin(), s.end());
+    return s;
+}
+
+static std::string uintToStr(size_t n) {
+    if (n == 0) return "0";
+    std::string s;
+    s.reserve(20);
+    while (n > 0) {
+        s.push_back(static_cast<char>('0' + (n % 10)));
+        n /= 10;
+    }
+    std::reverse(s.begin(), s.end());
+    return s;
+}
+
 // === RESPSimpleString ===
-RESPSimpleString::RESPSimpleString(std::string value) 
+RESPSimpleString::RESPSimpleString(std::string value)
     : value_(std::move(value)) {}
 
 std::string RESPSimpleString::toString() const {
-    std::ostringstream oss;
-    oss << "+" << value_ << "\r\n";
-    return oss.str();
+    std::string r;
+    r.reserve(3 + value_.size());
+    r += '+';
+    r += value_;
+    r += "\r\n";
+    return r;
 }
 
 // === RESPError ===
-RESPError::RESPError(std::string message) 
+RESPError::RESPError(std::string message)
     : message_(std::move(message)) {}
 
 std::string RESPError::toString() const {
-    std::ostringstream oss;
-    oss << "-" << message_ << "\r\n";
-    return oss.str();
+    std::string r;
+    r.reserve(3 + message_.size());
+    r += '-';
+    r += message_;
+    r += "\r\n";
+    return r;
 }
 
 // === RESPInteger ===
-RESPInteger::RESPInteger(int64_t value) 
+RESPInteger::RESPInteger(int64_t value)
     : value_(value) {}
 
 std::string RESPInteger::toString() const {
-    std::ostringstream oss;
-    oss << ":" << value_ << "\r\n";
-    return oss.str();
+    auto num = intToStr(value_);
+    std::string r;
+    r.reserve(3 + num.size());
+    r += ':';
+    r += num;
+    r += "\r\n";
+    return r;
 }
 
 // === RESPBulkString ===
-RESPBulkString::RESPBulkString(std::string value) 
+RESPBulkString::RESPBulkString(std::string value)
     : value_(std::move(value)), isNull_(false) {}
 
 RESPBulkString RESPBulkString::null() {
@@ -45,17 +81,20 @@ RESPBulkString RESPBulkString::null() {
 }
 
 std::string RESPBulkString::toString() const {
-    std::ostringstream oss;
-    if (isNull_) {
-        oss << "$-1\r\n";
-    } else {
-        oss << "$" << value_.size() << "\r\n" << value_ << "\r\n";
-    }
-    return oss.str();
+    if (isNull_) return "$-1\r\n";
+    auto len = uintToStr(value_.size());
+    std::string r;
+    r.reserve(1 + len.size() + 2 + value_.size() + 2);
+    r += '$';
+    r += len;
+    r += "\r\n";
+    r += value_;
+    r += "\r\n";
+    return r;
 }
 
 // === RESPArray ===
-RESPArray::RESPArray(std::vector<std::shared_ptr<RESPObject>> elements) 
+RESPArray::RESPArray(std::vector<std::shared_ptr<RESPObject>> elements)
     : elements_(std::move(elements)), isNull_(false) {}
 
 RESPArray RESPArray::null() {
@@ -65,16 +104,17 @@ RESPArray RESPArray::null() {
 }
 
 std::string RESPArray::toString() const {
-    std::ostringstream oss;
-    if (isNull_) {
-        oss << "*-1\r\n";
-    } else {
-        oss << "*" << elements_.size() << "\r\n";
-        for (const auto& elem : elements_) {
-            oss << elem->toString();
-        }
+    if (isNull_) return "*-1\r\n";
+    auto cnt = uintToStr(elements_.size());
+    std::string r;
+    r.reserve(1 + cnt.size() + 2);
+    r += '*';
+    r += cnt;
+    r += "\r\n";
+    for (const auto& elem : elements_) {
+        r += elem->toString();
     }
-    return oss.str();
+    return r;
 }
 
 } // namespace kvstore

@@ -30,6 +30,7 @@ Makefile
 *.cmake
 !CMakeLists.txt
 *.md
+!CHANGELOG.md
 *.mdc
 .cursor/
 # Compiled files
@@ -39,6 +40,11 @@ Makefile
 *.ilk
 *.meta
 *.pdb
+
+# Persistence runtime data
+*.aof
+*.rdb
+graphify-out/
 
 # Temporary files
 *.tmp

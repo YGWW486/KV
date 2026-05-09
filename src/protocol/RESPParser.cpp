@@ -1,5 +1,5 @@
 #include "protocol/RESPParser.h"
-#include <sstream>
+#include <charconv>
 #include <cctype>
 
 namespace kvstore {
@@ -87,22 +87,15 @@ ParseResult RESPParser::parseError(Buffer* buffer, std::shared_ptr<RESPObject>* 
 
 ParseResult RESPParser::parseInteger(Buffer* buffer, std::shared_ptr<RESPObject>* out) {
     size_t crlf_pos = findCRLF(buffer);
-    if (crlf_pos == std::string::npos) {
-        return ParseResult::Incomplete;
-    }
+    if (crlf_pos == std::string::npos) return ParseResult::Incomplete;
+    if (*buffer->peek() != ':') return ParseResult::Error;
 
-    if (*buffer->peek() != ':') {
-        return ParseResult::Error;
-    }
-
-    std::string line(buffer->peek() + 1, crlf_pos - 1);
-    buffer->retrieve(crlf_pos + 2);
+    const char* start = buffer->peek() + 1;
+    const char* end = start + crlf_pos - 1;
     int64_t value = 0;
-    try {
-        value = std::stoll(line);
-    } catch (...) {
-        return ParseResult::Error;
-    }
+    auto [ptr, ec] = std::from_chars(start, end, value);
+    if (ec != std::errc() || ptr != end) return ParseResult::Error;
+    buffer->retrieve(crlf_pos + 2);
     *out = std::make_shared<RESPInteger>(value);
     return ParseResult::Success;
 }
@@ -126,11 +119,8 @@ ParseResult RESPParser::parseBulkString(Buffer* buffer, std::shared_ptr<RESPObje
     }
 
     int64_t bulk_len = 0;
-    try {
-        bulk_len = std::stoll(std::string(data + 1, crlf_pos - 1));
-    } catch (...) {
-        return ParseResult::Error;
-    }
+    auto [ptr1, ec1] = std::from_chars(data + 1, data + crlf_pos, bulk_len);
+    if (ec1 != std::errc()) return ParseResult::Error;
 
     const size_t header_len = crlf_pos + 2;
     if (bulk_len == -1) { // NULL Bulk String
@@ -174,11 +164,8 @@ ParseResult RESPParser::parseArray(Buffer* buffer, std::shared_ptr<RESPObject>* 
     }
 
     int64_t num_elements = 0;
-    try {
-        num_elements = std::stoll(std::string(data + 1, crlf_pos - 1));
-    } catch (...) {
-        return ParseResult::Error;
-    }
+    auto [ptr2, ec2] = std::from_chars(data + 1, data + crlf_pos, num_elements);
+    if (ec2 != std::errc()) return ParseResult::Error;
 
     buffer->retrieve(crlf_pos + 2);
     if (num_elements == -1) { // NULL array

@@ -3,7 +3,7 @@
 
 #include "StorageEngine.h"
 #include <unordered_map>
-#include <list>
+#include <deque>
 #include <unordered_set>
 #include <map>
 #include <mutex>
@@ -64,7 +64,7 @@ private:
     // Hash 存储
     std::unordered_map<std::string, std::unordered_map<std::string, std::string>> hash_map_;
     // List 存储
-    std::unordered_map<std::string, std::list<std::string>> list_map_;
+    std::unordered_map<std::string, std::deque<std::string>> list_map_;
     // Set 存储
     std::unordered_map<std::string, std::unordered_set<std::string>> set_map_;
     // Sorted Set 存储（使用两个 map：一个值到分数，一个分数到值）

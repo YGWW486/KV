@@ -4,6 +4,8 @@
 
 #include <cctype>
 #include <sstream>
+#include <unordered_map>
+#include <functional>
 
 namespace kvstore {
 
@@ -18,12 +20,7 @@ void CommandDispatcher::recordAOF(const std::string& cmd, const std::vector<std:
         cmd == "HKEYS" || cmd == "HLEN" || cmd == "SMEMBERS" || cmd == "SISMEMBER" ||
         cmd == "SCARD" || cmd == "ZRANGE" || cmd == "ZSCORE" || cmd == "ZRANK" ||
         cmd == "ZCARD") return; // read-only commands
-    std::ostringstream oss;
-    for (size_t i = 0; i < argv.size(); ++i) {
-        if (i > 0) oss << " ";
-        oss << argv[i];
-    }
-    aof_->recordWrite(oss.str());
+    aof_->recordWrite(AOFPersistenceEngine::formatAOFLine(argv));
 }
 
 std::vector<std::string> CommandDispatcher::flattenArgs(const std::shared_ptr<RESPObject>& request) {
@@ -429,47 +426,51 @@ std::shared_ptr<RESPObject> CommandDispatcher::handleZcard(const std::vector<std
     return std::make_shared<RESPInteger>(static_cast<int64_t>(storage_->zcard(argv[1])));
 }
 
+const std::unordered_map<std::string, CommandDispatcher::CmdHandler> CommandDispatcher::kDispatchTable = {
+    {"PING",   &CommandDispatcher::handlePing},
+    {"SET",    &CommandDispatcher::handleSet},
+    {"GET",    &CommandDispatcher::handleGet},
+    {"DEL",    &CommandDispatcher::handleDel},
+    {"INCR",   &CommandDispatcher::handleIncr},
+    {"DECR",   &CommandDispatcher::handleDecr},
+    {"APPEND", &CommandDispatcher::handleAppend},
+    {"STRLEN", &CommandDispatcher::handleStrlen},
+    {"EXISTS", &CommandDispatcher::handleExists},
+    {"LPUSH",  &CommandDispatcher::handleLpush},
+    {"RPUSH",  &CommandDispatcher::handleRpush},
+    {"LPOP",   &CommandDispatcher::handleLpop},
+    {"RPOP",   &CommandDispatcher::handleRpop},
+    {"LRANGE", &CommandDispatcher::handleLrange},
+    {"LLEN",   &CommandDispatcher::handleLlen},
+    {"HSET",   &CommandDispatcher::handleHset},
+    {"HGET",   &CommandDispatcher::handleHget},
+    {"HDEL",   &CommandDispatcher::handleHdel},
+    {"HGETALL",&CommandDispatcher::handleHgetall},
+    {"HKEYS",  &CommandDispatcher::handleHkeys},
+    {"HLEN",   &CommandDispatcher::handleHlen},
+    {"SADD",   &CommandDispatcher::handleSadd},
+    {"SREM",   &CommandDispatcher::handleSrem},
+    {"SMEMBERS",&CommandDispatcher::handleSmembers},
+    {"SISMEMBER",&CommandDispatcher::handleSismember},
+    {"SCARD",  &CommandDispatcher::handleScard},
+    {"ZADD",   &CommandDispatcher::handleZadd},
+    {"ZREM",   &CommandDispatcher::handleZrem},
+    {"ZRANGE", &CommandDispatcher::handleZrange},
+    {"ZSCORE", &CommandDispatcher::handleZscore},
+    {"ZRANK",  &CommandDispatcher::handleZrank},
+    {"ZCARD",  &CommandDispatcher::handleZcard},
+};
+
 std::shared_ptr<RESPObject> CommandDispatcher::dispatch(const std::shared_ptr<RESPObject>& request) {
     std::string cmd = extractCommand(request);
     if (cmd.empty()) {
         return std::make_shared<RESPError>("ERR invalid request");
     }
 
-    auto args = flattenArgs(request);
-
-    if (cmd == "PING")   return handlePing(args);
-    if (cmd == "SET")    return handleSet(args);
-    if (cmd == "GET")    return handleGet(args);
-    if (cmd == "DEL")    return handleDel(args);
-    if (cmd == "INCR")   return handleIncr(args);
-    if (cmd == "DECR")   return handleDecr(args);
-    if (cmd == "APPEND") return handleAppend(args);
-    if (cmd == "STRLEN") return handleStrlen(args);
-    if (cmd == "EXISTS") return handleExists(args);
-    if (cmd == "LPUSH")  return handleLpush(args);
-    if (cmd == "RPUSH")  return handleRpush(args);
-    if (cmd == "LPOP")   return handleLpop(args);
-    if (cmd == "RPOP")   return handleRpop(args);
-    if (cmd == "LRANGE") return handleLrange(args);
-    if (cmd == "LLEN")   return handleLlen(args);
-    if (cmd == "HSET")   return handleHset(args);
-    if (cmd == "HGET")   return handleHget(args);
-    if (cmd == "HDEL")   return handleHdel(args);
-    if (cmd == "HGETALL")return handleHgetall(args);
-    if (cmd == "HKEYS")  return handleHkeys(args);
-    if (cmd == "HLEN")   return handleHlen(args);
-    if (cmd == "SADD")   return handleSadd(args);
-    if (cmd == "SREM")   return handleSrem(args);
-    if (cmd == "SMEMBERS") return handleSmembers(args);
-    if (cmd == "SISMEMBER") return handleSismember(args);
-    if (cmd == "SCARD")  return handleScard(args);
-    if (cmd == "ZADD")   return handleZadd(args);
-    if (cmd == "ZREM")   return handleZrem(args);
-    if (cmd == "ZRANGE") return handleZrange(args);
-    if (cmd == "ZSCORE") return handleZscore(args);
-    if (cmd == "ZRANK")  return handleZrank(args);
-    if (cmd == "ZCARD")  return handleZcard(args);
-
+    auto it = kDispatchTable.find(cmd);
+    if (it != kDispatchTable.end()) {
+        return (this->*(it->second))(flattenArgs(request));
+    }
     return std::make_shared<RESPError>("ERR unknown command '" + cmd + "'");
 }
 
