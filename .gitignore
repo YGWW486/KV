@@ -31,6 +31,7 @@ Makefile
 !CMakeLists.txt
 *.md
 !CHANGELOG.md
+!docs/PRODUCTION_READINESS.md
 *.mdc
 .cursor/
 # Compiled files
