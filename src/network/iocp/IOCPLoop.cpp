@@ -12,18 +12,36 @@
 
 namespace kvstore {
 
-IOCPLoop::OverlappedContext::OverlappedContext(Channel* ch, int type)
-    : channel(ch), eventType(type)
+// ── OverlappedContext ──────────────────────────────────────────────
+
+IOCPLoop::OverlappedContext::OverlappedContext(Channel* ch, int type, size_t bufferSize)
+    : channel(ch), eventType(type), bytesTransferred(0)
 {
-    reset();
+    ZeroMemory(&overlapped, sizeof(overlapped));
+    ioBuffer.resize(bufferSize);
+    wsaBuf.buf = ioBuffer.data();
+    wsaBuf.len = (eventType == 0) ? static_cast<ULONG>(bufferSize) : 0;
 }
 
-void IOCPLoop::OverlappedContext::reset() {
+void IOCPLoop::OverlappedContext::resetForRead(size_t bufferSize) {
+    eventType = 0;
+    bytesTransferred = 0;
     ZeroMemory(&overlapped, sizeof(overlapped));
-    wsaBuf.buf = buffer.beginWrite();
-    // 统一使用0字节I/O作为事件通知，实际读写由Connection非阻塞路径处理。
-    wsaBuf.len = 0;
+    ioBuffer.resize(bufferSize);
+    wsaBuf.buf = ioBuffer.data();
+    wsaBuf.len = static_cast<ULONG>(bufferSize);
 }
+
+void IOCPLoop::OverlappedContext::resetForWrite(const char* data, size_t len) {
+    eventType = 1;
+    bytesTransferred = 0;
+    ZeroMemory(&overlapped, sizeof(overlapped));
+    ioBuffer.assign(data, data + len);
+    wsaBuf.buf = ioBuffer.data();
+    wsaBuf.len = static_cast<ULONG>(len);
+}
+
+// ── IOCPLoop constructor / destructor ──────────────────────────────
 
 IOCPLoop::IOCPLoop()
     : iocpHandle_(nullptr)
@@ -45,6 +63,7 @@ IOCPLoop::IOCPLoop()
                                  std::to_string(static_cast<int>(GetLastError())));
     }
 
+    // Build a TCP socket-pair for wakeup (loopback connect/accept)
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -162,12 +181,18 @@ IOCPLoop::~IOCPLoop() {
         closesocket(wakeupSocket_[1]);
         wakeupSocket_[1] = INVALID_SOCKET;
     }
+    // Clean up any remaining contexts
+    for (auto& kv : readContexts_) delete kv.second;
+    for (auto& kv : writeContexts_) delete kv.second;
+    for (auto* ctx : zombieContexts_) delete ctx;
     if (wsaStartedByIocpLoop_) {
         WSACleanup();
         wsaStartedByIocpLoop_ = false;
     }
     LOG_INFO << "IOCPLoop " << this << " destructed";
 }
+
+// ── Event loop ─────────────────────────────────────────────────────
 
 void IOCPLoop::loop() {
     assert(!looping_);
@@ -214,17 +239,18 @@ void IOCPLoop::quit() {
 }
 
 void IOCPLoop::wakeup() {
-    if (!iocpHandle_) {
-        return;
-    }
+    if (!iocpHandle_) return;
     if (!PostQueuedCompletionStatus(iocpHandle_, 0, reinterpret_cast<ULONG_PTR>(this), nullptr)) {
         LOG_WARN << "PostQueuedCompletionStatus (wakeup) failed: " << GetLastError();
     }
 }
 
 void IOCPLoop::handleWakeup() {
-    // 这里是简化版，实际可以用 socketpair 发送消息
+    // Wakeup is a no-op — simply interrupts GetQueuedCompletionStatus so the
+    // loop can check quit_ and process pending functors.
 }
+
+// ── Completion handling ────────────────────────────────────────────
 
 void IOCPLoop::handleCompletions(DWORD initialTimeoutMs) {
     DWORD bytesTransferred = 0;
@@ -243,95 +269,112 @@ void IOCPLoop::handleCompletions(DWORD initialTimeoutMs) {
 
     const DWORD gqcsErr = success ? ERROR_SUCCESS : GetLastError();
 
+    // Timeout — no completions available
     if (success == FALSE && pOverlapped == nullptr && gqcsErr == WAIT_TIMEOUT) {
         return;
     }
 
+    // Wakeup notification (pOverlapped is null, key matches loop pointer)
     if (pOverlapped == nullptr &&
         completionKey == reinterpret_cast<ULONG_PTR>(this)) {
         handleWakeup();
         return;
     }
 
-    if (success == FALSE) {
-        if (pOverlapped == nullptr) {
-            LOG_WARN << "GetQueuedCompletionStatus (no packet): " << gqcsErr;
-            return;
-        }
-        LOG_WARN << "GetQueuedCompletionStatus failed: " << gqcsErr;
+    // Unexpected null overlapped
+    if (pOverlapped == nullptr) {
+        LOG_WARN << "GetQueuedCompletionStatus (no packet): " << gqcsErr;
         return;
     }
 
     OverlappedContext* ctx = reinterpret_cast<OverlappedContext*>(pOverlapped);
-    if (ctx == nullptr) {
+
+    // Zombie context — cancelled operation, just clean up
+    if (zombieContexts_.count(ctx)) {
+        zombieContexts_.erase(ctx);
+        delete ctx;
         return;
     }
 
     Channel* channel = ctx->channel;
     if (channel == nullptr) {
+        delete ctx;
         return;
     }
 
-    if (ctx->eventType == 0) { // read
-        SOCKET fd = static_cast<SOCKET>(channel->fd());
-        ctx->reset();
-        DWORD flags = 0;
-        DWORD bytesReceived = 0;
-        int rc = WSARecv(fd, &ctx->wsaBuf, 1, &bytesReceived, &flags,
-                         &ctx->overlapped, nullptr);
-        if (rc == SOCKET_ERROR) {
-            int err = WSAGetLastError();
-            if (err != ERROR_IO_PENDING) {
-                LOG_WARN << "WSARecv re-arm failed: " << err;
-            }
+    SOCKET fd = static_cast<SOCKET>(channel->fd());
+
+    // Operation failed
+    if (success == FALSE) {
+        LOG_WARN << "IOCP operation failed for fd " << fd
+                 << " type=" << ctx->eventType << " err=" << gqcsErr;
+        channel->set_revents(Channel::kErrorEvent);
+        activeChannels_.push_back(channel);
+        delete ctx;
+        if (ctx->eventType == 0) readContexts_.erase(fd);
+        else writeContexts_.erase(fd);
+        return;
+    }
+
+    ctx->bytesTransferred = bytesTransferred;
+
+    if (ctx->eventType == 0) {
+        // ── Read completion ────────────────────────────────────
+        if (bytesTransferred > 0) {
+            ctx->ioBuffer.resize(bytesTransferred);
+            completedReads_[fd] = std::move(ctx->ioBuffer);
+            channel->set_revents(Channel::kReadEvent);
+            // Re-arm read for the next incoming data
+            delete ctx;
+            readContexts_.erase(fd);
+            postRead(channel);
+        } else {
+            // Zero bytes = graceful close by peer
+            channel->set_revents(Channel::kCloseEvent);
+            delete ctx;
+            readContexts_.erase(fd);
         }
-        channel->set_revents(Channel::kReadEvent);
-    } else { // write
-        if (channel->isWriting()) {
-            SOCKET fd = static_cast<SOCKET>(channel->fd());
-            ctx->reset();
-            DWORD bytesSent = 0;
-            int rc = WSASend(fd, &ctx->wsaBuf, 1, &bytesSent, 0,
-                             &ctx->overlapped, nullptr);
-            if (rc == SOCKET_ERROR) {
-                int err = WSAGetLastError();
-                if (err != ERROR_IO_PENDING) {
-                    LOG_WARN << "WSASend re-arm failed: " << err;
-                }
-            }
-        }
+    } else {
+        // ── Write completion ───────────────────────────────────
+        completedWrites_[fd] = bytesTransferred;
         channel->set_revents(Channel::kWriteEvent);
+        delete ctx;
+        writeContexts_.erase(fd);
     }
 
     activeChannels_.push_back(channel);
 }
 
+// ── Channel management ─────────────────────────────────────────────
+
 void IOCPLoop::updateChannel(Channel* channel) {
     assertInLoopThread();
     const int index = channel->index();
-    LOG_TRACE << "fd = " << channel->fd() << " events = " << channel->events() 
+    LOG_TRACE << "fd = " << channel->fd() << " events = " << channel->events()
               << " index = " << index;
 
     std::lock_guard<std::mutex> lock(channelsMutex_);
     SOCKET fd = static_cast<SOCKET>(channel->fd());
 
-    if (index == -1) { // 新 channel
+    if (index == -1) {
+        // New channel
         assert(channels_.find(fd) == channels_.end());
         channels_[fd] = channel;
-        channel->set_index(1); // 1 表示已添加
+        channel->set_index(1);
 
-        // 将 socket 绑定到 IOCP
         HANDLE h = CreateIoCompletionPort(reinterpret_cast<HANDLE>(fd), iocpHandle_,
                                           reinterpret_cast<ULONG_PTR>(channel), 0);
         if (h == nullptr) {
             LOG_WARN << "CreateIoCompletionPort for fd " << fd << " failed";
         }
 
-        // 开始异步接收
         if (channel->isReading()) {
             postRead(channel);
         }
-    } else { // 更新现有 channel
+        // Write posting is done directly by Connection via postWriteData(),
+        // not triggered here — the Connection owns the output buffer data.
+    } else {
+        // Update existing channel
         assert(channels_.find(fd) != channels_.end());
         assert(channels_[fd] == channel);
 
@@ -341,11 +384,8 @@ void IOCPLoop::updateChannel(Channel* channel) {
                 postRead(channel);
             }
         }
-        if (channel->isWriting()) {
-            // 当前Connection写路径为同步send，IOCP层直接触发一次写回调以刷新输出缓冲。
-            channel->set_revents(Channel::kWriteEvent);
-            activeChannels_.push_back(channel);
-        }
+        // Write path: Connection calls postWriteData() directly after
+        // enabling writing. No implicit write posting here.
     }
 }
 
@@ -357,23 +397,27 @@ void IOCPLoop::removeChannel(Channel* channel) {
     std::lock_guard<std::mutex> lock(channelsMutex_);
     assert(channels_.find(fd) != channels_.end());
     assert(channels_[fd] == channel);
-    assert(channel->isNoneEvent());
+    assert(channel->isNoneEvent() || channel->index() == 1);
 
-    assert(channel->index() == 1);
+    // Cancel pending I/O operations on this socket
+    CancelIoEx(reinterpret_cast<HANDLE>(fd), nullptr);
 
-    // 清理上下文
+    // Move contexts to zombie set — their completions will arrive with
+    // ERROR_OPERATION_ABORTED and be cleaned up safely.
     auto readIt = readContexts_.find(fd);
     if (readIt != readContexts_.end()) {
-        delete readIt->second;
+        zombieContexts_.insert(readIt->second);
         readContexts_.erase(readIt);
     }
 
     auto writeIt = writeContexts_.find(fd);
     if (writeIt != writeContexts_.end()) {
-        delete writeIt->second;
+        zombieContexts_.insert(writeIt->second);
         writeContexts_.erase(writeIt);
     }
 
+    completedReads_.erase(fd);
+    completedWrites_.erase(fd);
     channels_.erase(fd);
     channel->set_index(-1);
 }
@@ -384,15 +428,20 @@ bool IOCPLoop::hasChannel(Channel* channel) const {
     return channels_.find(fd) != channels_.end();
 }
 
+// ── Async I/O operations ───────────────────────────────────────────
+
 void IOCPLoop::postRead(Channel* channel) {
     SOCKET fd = static_cast<SOCKET>(channel->fd());
 
-    OverlappedContext* ctx = new OverlappedContext(channel, 0);
+    // Don't post a read if one is already pending
+    if (readContexts_.find(fd) != readContexts_.end()) return;
+
+    OverlappedContext* ctx = new OverlappedContext(channel, 0, 65536);
     readContexts_[fd] = ctx;
 
     DWORD flags = 0;
     DWORD bytesReceived = 0;
-    int rc = WSARecv(fd, &ctx->wsaBuf, 1, &bytesReceived, &flags, 
+    int rc = WSARecv(fd, &ctx->wsaBuf, 1, &bytesReceived, &flags,
                      &ctx->overlapped, nullptr);
 
     if (rc == SOCKET_ERROR) {
@@ -405,13 +454,24 @@ void IOCPLoop::postRead(Channel* channel) {
     }
 }
 
-void IOCPLoop::postWrite(Channel* channel) {
-    SOCKET fd = static_cast<SOCKET>(channel->fd());
+void IOCPLoop::postWriteData(SOCKET fd, const char* data, size_t len) {
+    if (len == 0) return;
 
-    OverlappedContext* ctx = new OverlappedContext(channel, 1);
+    Channel* channel = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(channelsMutex_);
+        auto it = channels_.find(fd);
+        if (it != channels_.end()) channel = it->second;
+    }
+    if (channel == nullptr) return;
+
+    // Don't post if one is already pending
+    if (writeContexts_.find(fd) != writeContexts_.end()) return;
+
+    OverlappedContext* ctx = new OverlappedContext(channel, 1, len);
+    ctx->resetForWrite(data, len);
     writeContexts_[fd] = ctx;
 
-    ctx->reset();
     DWORD bytesSent = 0;
     int rc = WSASend(fd, &ctx->wsaBuf, 1, &bytesSent, 0,
                      &ctx->overlapped, nullptr);
@@ -426,8 +486,37 @@ void IOCPLoop::postWrite(Channel* channel) {
     }
 }
 
+// ── Data retrieval for Connection ──────────────────────────────────
+
+std::vector<char> IOCPLoop::takeReadData(SOCKET fd) {
+    auto it = completedReads_.find(fd);
+    if (it != completedReads_.end()) {
+        std::vector<char> data = std::move(it->second);
+        completedReads_.erase(it);
+        return data;
+    }
+    return {};
+}
+
+DWORD IOCPLoop::takeWriteResult(SOCKET fd) {
+    auto it = completedWrites_.find(fd);
+    if (it != completedWrites_.end()) {
+        DWORD result = it->second;
+        completedWrites_.erase(it);
+        return result;
+    }
+    return 0;
+}
+
+bool IOCPLoop::hasReadClosed(SOCKET fd) {
+    // After a close event is processed, the read context is gone and no
+    // completed read data exists — the close is signaled via kCloseEvent.
+    return readContexts_.find(fd) == readContexts_.end()
+        && completedReads_.find(fd) == completedReads_.end();
+}
+
 void IOCPLoop::handleRead() {
-    // 基类接口兼容
+    // Base class interface compatibility — IOCP uses handleCompletions().
 }
 
 } // namespace kvstore

@@ -2,6 +2,7 @@
 #include "utils/Logging.h"
 
 #ifdef _WIN32
+#include "network/iocp/IOCPLoop.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #else
@@ -113,15 +114,23 @@ void Connection::sendInLoop(const void* message, size_t len) {
         return;
     }
 
+#ifdef _WIN32
+    // ── Windows async write path ─────────────────────────────────
+    bool startWrite = (!channel_->isWriting() && outputBuffer_.readableBytes() == 0);
+    outputBuffer_.append(static_cast<const char*>(message), len);
+    if (startWrite) {
+        channel_->enableWriting();
+        auto* iocpLoop = static_cast<IOCPLoop*>(loop_);
+        iocpLoop->postWriteData(sockfd_, outputBuffer_.peek(),
+                                 outputBuffer_.readableBytes());
+    }
+#else
+    // ── Linux synchronous write path ─────────────────────────────
     size_t remaining = len;
     const char* data = static_cast<const char*>(message);
 
     if (!channel_->isWriting() && outputBuffer_.readableBytes() == 0) {
-#ifdef _WIN32
-        int n = ::send(sockfd_, data, static_cast<int>(remaining), 0);
-#else
         ssize_t n = ::send(sockfd_, data, remaining, MSG_NOSIGNAL);
-#endif
         if (n >= 0) {
             remaining -= static_cast<size_t>(n);
             data += n;
@@ -137,6 +146,7 @@ void Connection::sendInLoop(const void* message, size_t len) {
             channel_->enableWriting();
         }
     }
+#endif
 }
 
 void Connection::shutdown() {
@@ -164,6 +174,19 @@ void Connection::shutdownInLoop() {
 
 void Connection::handleRead(Timestamp receiveTime) {
     loop_->assertInLoopThread();
+
+#ifdef _WIN32
+    // ── Windows async read path ──────────────────────────────────
+    auto* iocpLoop = static_cast<IOCPLoop*>(loop_);
+    std::vector<char> data = iocpLoop->takeReadData(sockfd_);
+    if (!data.empty()) {
+        inputBuffer_.append(data.data(), data.size());
+        if (messageCallback_) {
+            messageCallback_(shared_from_this(), &inputBuffer_, receiveTime);
+        }
+    }
+#else
+    // ── Linux synchronous read path ──────────────────────────────
     int savedErrno = 0;
     ssize_t n = inputBuffer_.readFd(sockfd_, &savedErrno);
     if (n > 0) {
@@ -173,41 +196,56 @@ void Connection::handleRead(Timestamp receiveTime) {
     } else if (n == 0) {
         handleClose();
     } else {
-#ifdef _WIN32
-        if (savedErrno == WSAEWOULDBLOCK) {
-            return;
-        }
-#else
         if (savedErrno == EAGAIN || savedErrno == EWOULDBLOCK) {
             return;
         }
-#endif
         LOG_ERROR << "Read error: " << savedErrno;
         handleError();
     }
+#endif
 }
 
 void Connection::handleWrite() {
     loop_->assertInLoopThread();
-    if (channel_->isWriting()) {
+    if (!channel_->isWriting()) return;
+
 #ifdef _WIN32
-        int n = ::send(sockfd_, outputBuffer_.peek(), static_cast<int>(outputBuffer_.readableBytes()), 0);
+    // ── Windows async write completion path ──────────────────────
+    auto* iocpLoop = static_cast<IOCPLoop*>(loop_);
+    DWORD bytesWritten = iocpLoop->takeWriteResult(sockfd_);
+    if (bytesWritten > 0) {
+        outputBuffer_.retrieve(bytesWritten);
+    }
+    if (outputBuffer_.readableBytes() > 0) {
+        // More data queued — post next async write
+        iocpLoop->postWriteData(sockfd_, outputBuffer_.peek(),
+                                 outputBuffer_.readableBytes());
+    } else {
+        // All data sent
+        channel_->disableWriting();
+        if (writeCompleteCallback_) {
+            loop_->queueInLoop(std::bind(writeCompleteCallback_, shared_from_this()));
+        }
+        if (state_ == kDisconnecting) {
+            shutdownInLoop();
+        }
+    }
 #else
-        ssize_t n = ::send(sockfd_, outputBuffer_.peek(), outputBuffer_.readableBytes(), MSG_NOSIGNAL);
-#endif
-        if (n > 0) {
-            outputBuffer_.retrieve(static_cast<size_t>(n));
-            if (outputBuffer_.readableBytes() == 0) {
-                channel_->disableWriting();
-                if (writeCompleteCallback_) {
-                    loop_->queueInLoop(std::bind(writeCompleteCallback_, shared_from_this()));
-                }
-                if (state_ == kDisconnecting) {
-                    shutdownInLoop();
-                }
+    // ── Linux synchronous write path ─────────────────────────────
+    ssize_t n = ::send(sockfd_, outputBuffer_.peek(), outputBuffer_.readableBytes(), MSG_NOSIGNAL);
+    if (n > 0) {
+        outputBuffer_.retrieve(static_cast<size_t>(n));
+        if (outputBuffer_.readableBytes() == 0) {
+            channel_->disableWriting();
+            if (writeCompleteCallback_) {
+                loop_->queueInLoop(std::bind(writeCompleteCallback_, shared_from_this()));
+            }
+            if (state_ == kDisconnecting) {
+                shutdownInLoop();
             }
         }
     }
+#endif
 }
 
 void Connection::handleClose() {

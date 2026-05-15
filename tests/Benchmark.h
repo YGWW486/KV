@@ -9,7 +9,9 @@
 #include <algorithm>
 #include <iostream>
 #include <fstream>
+#ifndef _WIN32
 #include <sys/resource.h>
+#endif
 #include "../src/utils/Logging.h"
 
 #ifdef _WIN32
