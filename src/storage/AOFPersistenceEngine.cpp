@@ -21,6 +21,7 @@ namespace kvstore {
 
 AOFPersistenceEngine::AOFPersistenceEngine(const std::string& aof_path)
     : aof_path_(aof_path), policy_(AOFPolicy::EVERYSEC) {
+    openAOFFile();
     LOG_INFO << "AOF持久化引擎初始化，文件路径: " << aof_path_;
     startBgThread();
 }
@@ -376,7 +377,6 @@ void AOFPersistenceEngine::rewriteAOFAsync(const StorageEngine* storage) {
     LOG_INFO << "Starting async AOF rewrite...";
     rewrite_thread_ = std::thread([this, storage]() {
         std::string temp_path = aof_path_ + ".tmp";
-        // Do the heavy work: scan storage, write compacted commands
         {
             std::ofstream temp_file(temp_path);
             if (!temp_file.is_open()) {
@@ -422,8 +422,7 @@ void AOFPersistenceEngine::rewriteAOFAsync(const StorageEngine* storage) {
                 case KeyType::None: break;
                 }
             }
-        } // temp_file closed
-        // Atomic swap under fd_mutex_
+        }
         {
             std::lock_guard<std::mutex> lock(fd_mutex_);
             closeAOFFile();

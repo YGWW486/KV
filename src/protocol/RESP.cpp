@@ -1,4 +1,5 @@
 #include "protocol/RESP.h"
+#include <algorithm>
 #include <string>
 
 namespace kvstore {
